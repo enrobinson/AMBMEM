@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ambmem"
+version = "0.1.0"
+description = "Research-preview builder for Amber-compatible membrane systems"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Emily Weed-Nichols"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+]
+
+[project.scripts]
+ambmem = "ambmem.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ambmem = [
+  "data/reference_library/**/*.pdb",
+  "data/reference_library/**/*.json",
+  "data/reference_library/**/*.yaml",
+  "data/reference_library/**/*.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

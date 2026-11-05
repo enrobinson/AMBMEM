@@ -1,0 +1,68 @@
+membrane_only:
+  enabled: true
+  box_xy_angstrom: [120.0, 120.0]
+  half_thickness_angstrom: 17.9
+  target_total_lipids: 400
+  target_per_leaflet: 200
+
+reference_library:
+  POPC: packaged:POPC
+
+membrane:
+  host_lipid: POPC
+  box_z_angstrom: 96.0
+
+packing:
+  fixed_heavy_lipid_heavy_angstrom: 2.0
+  fixed_heavy_lipid_hydrogen_angstrom: 1.2
+  lipid_hydrogen_hydrogen_angstrom: 1.15
+
+build:
+  seed: 7001
+  replicas: 1
+
+boundary_packing:
+  enabled: false
+
+complex_membrane:
+  enabled: true
+  POPS_fraction: 0.0
+  CHL_fraction: 0.05
+  protein_exclusion_shell_angstrom: 0.0
+  CHL_reference: packaged:CHL
+  cholesterol_trials: 160
+  cholesterol_minimum_hydrogen_hydrogen_angstrom: 1.15
+  require_exact_counts: true
+  leaflets:
+    upper: {POPS_fraction: 0.0, CHL_fraction: 0.05}
+    lower: {POPS_fraction: 0.0, CHL_fraction: 0.05}
+
+solvent:
+  enabled: true
+  model: OPC
+  reference_cache: ~/.cache/ambmem/opcbox.pdb
+  positive_z_buffer_from_headgroups_angstrom: 30.0
+  negative_z_buffer_from_headgroups_angstrom: 30.0
+  minimum_water_oxygen_system_distance_angstrom: 2.4
+  minimum_water_hydrogen_system_distance_angstrom: 1.5
+  minimum_water_virtual_site_system_distance_angstrom: 1.2
+  preserve_input_waters: false
+  minimum_water_beyond_fixed_atoms_angstrom: 0.0
+
+topology:
+  enabled: true
+  membrane_only: true
+  charge_integer_tolerance_e: 0.01
+  output_prmtop: topology.prmtop
+  output_rst7: coordinates.rst7
+
+ions:
+  enabled: true
+  salt: KCl
+  concentration_molar: 0.15
+  minimum_ion_fixed_heavy_distance_angstrom: 4.0
+  minimum_ion_ion_distance_angstrom: 5.0
+
+output:
+  directory: control_membrane_replica_01
+  pdb_name: system_membrane_solvated.pdb

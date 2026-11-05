@@ -1,0 +1,11 @@
+name: POPC
+class: phospholipid
+charge: 0
+coordinate_type: relaxed_membrane
+file: reference.pdb
+component_resnames:
+- PA
+- PC
+- OL
+anchor_atom: P31
+expected_atoms: 134

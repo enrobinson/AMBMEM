@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: AMBMEM
+type: software
+message: "If you use AMBMEM, cite this software and the relevant Amber/Lipid21/OPC methods."
+authors:
+  - family-names: Weed-Nichols
+    given-names: Emily
+version: 0.1.0
+release-date: 2026-11-05
+repository-code: "https://github.com/enrobinson/AMBMEM"
+license: other

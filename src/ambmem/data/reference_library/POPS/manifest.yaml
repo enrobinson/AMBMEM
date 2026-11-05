@@ -1,0 +1,11 @@
+name: POPS
+class: phospholipid
+charge: -1
+coordinate_type: relaxed_membrane
+file: reference.pdb
+component_resnames:
+- PA
+- PS
+- OL
+anchor_atom: P31
+expected_atoms: 127

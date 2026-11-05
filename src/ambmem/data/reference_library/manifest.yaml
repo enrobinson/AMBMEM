@@ -1,0 +1,43 @@
+library_name: AMBMEM validated packing references
+release_status: research_preview
+
+references:
+  POPC:
+    coordinate_file: POPC/reference.pdb
+    calibration_file: POPC/calibration.json
+    manifest_file: POPC/manifest.yaml
+    support_status: validated
+
+  POPS:
+    coordinate_file: POPS/reference.pdb
+    calibration_file: POPS/calibration.json
+    manifest_file: POPS/manifest.yaml
+    support_status: validated
+
+  POPE:
+    coordinate_file: POPE/reference.pdb
+    calibration_file: POPE/calibration.json
+    manifest_file: POPE/manifest.yaml
+    support_status: validated
+
+  CHL:
+    coordinate_file: CHL/conformers.pdb
+    calibration_file: CHL/calibration.json
+    manifest_file: CHL/manifest.yaml
+    support_status: validated
+
+ambertools:
+  minimum_version: 26
+  bundled: false
+  source: active_conda_environment
+  required_resources:
+    - tleap
+    - ParmEd
+    - leaprc.lipid21
+    - lipid21.lib
+    - lipid21.dat
+    - leaprc.water.opc
+    - opcbox.off
+    - frcmod.opc
+    - OPC-compatible ion parameters
+    - leaprc.gaff2

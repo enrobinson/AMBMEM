@@ -1,0 +1,42 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+conda-env/
+.DS_Store
+
+# AMBMEM outputs
+**/topology.prmtop
+**/coordinates.rst7
+**/system_membrane_solvated.pdb
+**/report.json
+**/environment_*.pdb
+**/environment_*.prmtop
+**/environment_*.rst7
+**/tleap_environment_*.log
+**/leap.log
+*.time
+
+# User inputs and private parameters
+sterol_parameters/
+custom_parameters/
+protein_inputs/
+production_runs/
+pre_membrane.prmtop
+pre_membrane.rst7
+
+# Trajectories and restart files
+*.nc
+*.mdcrd
+*.dcd
+*.xtc
+*.trr
+*.ncrst
+*.restrt

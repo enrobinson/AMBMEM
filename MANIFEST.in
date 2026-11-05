@@ -1,0 +1,3 @@
+recursive-include src/ambmem/data/reference_library *.pdb *.json *.yaml *.md
+recursive-include examples *.yaml *.md
+recursive-include docs *.md

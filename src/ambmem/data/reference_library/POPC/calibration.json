@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "algorithm_version": "0.7.0",
+  "lipid_name": "POPC",
+  "source_sha256": "593ecf8a11a4dc6392d15798c2532b21fce33794bd6f248cf02d97fbc4422af2",
+  "molecule_count": 128,
+  "calibration_type": "relaxed_membrane",
+  "intermolecular_reference_available": true,
+  "box_angstrom": [
+    63.491,
+    63.805,
+    76.213
+  ],
+  "contact_statistics": {
+    "heavy_heavy": {
+      "minimum": 2.847655526920349,
+      "percentile_1": 2.9225985440516613,
+      "percentile_5": 3.0969832095121212,
+      "median": 5.666057094664684
+    },
+    "heavy_hydrogen": {
+      "minimum": 1.9212048303083133,
+      "percentile_1": 2.141657939996064,
+      "percentile_5": 2.321548190324723,
+      "median": 4.804721115736063
+    },
+    "hydrogen_hydrogen": {
+      "minimum": 1.7350100864260112,
+      "percentile_1": 1.9133566251035725,
+      "percentile_5": 1.9873263446147957,
+      "median": 4.405539467534028
+    }
+  }
+}

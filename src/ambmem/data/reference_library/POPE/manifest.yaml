@@ -1,0 +1,19 @@
+name: POPE
+class: phospholipid
+charge: 0
+coordinate_type: relaxed_membrane
+file: reference.pdb
+component_resnames:
+- PA
+- PE
+- OL
+anchor_atom: P31
+expected_atoms: 125
+construction:
+  method: headgroup_module_substitution
+  compatible_host: POPC
+  retained_modules:
+  - PA
+  - OL
+  host_headgroup: PC
+  target_headgroup: PE

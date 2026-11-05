@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "algorithm_version": "0.7.0",
+  "lipid_name": "POPE",
+  "source_sha256": "6611854a2560ba06ee21feab9b02024032dcaa2296965015919a8eb72756c585",
+  "molecule_count": 128,
+  "calibration_type": "relaxed_membrane",
+  "intermolecular_reference_available": true,
+  "box_angstrom": [
+    59.675,
+    59.482,
+    84.899
+  ],
+  "contact_statistics": {
+    "heavy_heavy": {
+      "minimum": 2.568977617652594,
+      "percentile_1": 2.674516347990676,
+      "percentile_5": 2.771428733577929,
+      "median": 6.9431862028401685
+    },
+    "heavy_hydrogen": {
+      "minimum": 1.5582762912911168,
+      "percentile_1": 1.7013566183930586,
+      "percentile_5": 1.8191751834916974,
+      "median": 5.996036748369875
+    },
+    "hydrogen_hydrogen": {
+      "minimum": 1.7573596672280836,
+      "percentile_1": 1.8658396166983329,
+      "percentile_5": 1.974916037258181,
+      "median": 5.395466138146967
+    }
+  }
+}

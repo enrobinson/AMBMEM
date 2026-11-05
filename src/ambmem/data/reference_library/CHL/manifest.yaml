@@ -1,0 +1,11 @@
+name: CHL
+class: sterol
+charge: 0
+coordinate_type: isolated_conformers
+file: conformers.pdb
+component_resnames:
+- CHL
+anchor_atom: O1
+orientation_atom: C25
+expected_atoms: 74
+interface_offset_angstrom: 1.5
