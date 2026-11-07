@@ -66,6 +66,10 @@ def validate_config(path: str | Path, *, tleap_template_test: bool = True) -> tu
     messages: list[str] = []
 
     tleap = shutil.which("tleap")
+    cpptraj = shutil.which("cpptraj")
+    if not cpptraj:
+        raise PreflightError("cpptraj was not found. Activate a complete AmberTools 26+ environment.")
+    messages.append(f"cpptraj: PASS ({cpptraj})")
     if not tleap:
         raise PreflightError("tleap was not found. Activate an AmberTools 26+ Conda environment.")
     messages.append(f"tleap: PASS ({tleap})")

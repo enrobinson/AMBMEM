@@ -1,4 +1,7 @@
 from pathlib import Path
+# V0.16.2 COMMENSURATE PERIODIC BUILDER
+# V0.16.0 CPPTRAJ EXACT-FINAL-PAIR GATE
+from .final_validation import validate_final_system
 # V0.15.1 MEMBRANE-ONLY PACKING DEFAULTS
 # V0.15.0 MEMBRANE-ONLY BUILDER
 # V0.14.0 GENERIC CUSTOM STEROL PLACEMENT
@@ -757,16 +760,17 @@ def _place_chl_item(host,donors,fixed_cells,lipid_items,cfg,rng):
 # V0.12.3 CONTIGUOUS OPC TILING
 # V0.12.4 TLEAP-CONTIGUOUS OPC VOLUME
 def _validate_replacement_item(candidate,host_index,items,fixed_cells,cfg):
-    """Validate one replacement against fixed input and every other membrane item."""
+    """Validate a replacement against every other molecule with periodic MIC."""
     environment=[item for index,item in enumerate(items) if index!=host_index]
+    box=cfg.get('_periodic_box_angstrom')
+    if box is not None:
+        return _periodic_candidate_valid(candidate['xyz'],candidate['elements'],environment,box,cfg)
     lipid_cells=_build_atom_cells(environment,4.0)
     return _candidate_valid(
         candidate['xyz'],candidate['elements'],fixed_cells,lipid_cells,4.0,
         float(cfg.get('packing',{}).get('fixed_heavy_lipid_heavy_angstrom',2.0)),
         float(cfg.get('packing',{}).get('fixed_heavy_lipid_hydrogen_angstrom',1.2)),
-        1.5,1.05,
-        float(cfg.get('packing',{}).get('lipid_hydrogen_hydrogen_angstrom',1.15))
-    )
+        1.5,1.05,float(cfg.get('packing',{}).get('lipid_hydrogen_hydrogen_angstrom',1.15)))
 
 
 def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg,rng,leaf):
@@ -958,11 +962,18 @@ def _system_atom_cells(fixed,items,cell_width=4.0):
     return cells
 
 
-def _water_overlaps(xyz,elements,cells,oxygen_cut,hydrogen_cut,virtual_cut,cell_width=4.0):
+def _water_overlaps(xyz,elements,cells,oxygen_cut,hydrogen_cut,virtual_cut,cell_width=4.0,box=None):
+    if box is not None:
+        others=[other for bucket in cells.values() for other,_ in bucket]
+        if not others: return False
+        others=np.asarray(others,float); box=np.asarray(box,float)
+        for point,element in zip(xyz,elements):
+            cutoff=oxygen_cut if element=='O' else (hydrogen_cut if element=='H' else virtual_cut)
+            delta=_mic_delta(others-point,box)
+            if np.any(np.einsum('ij,ij->i',delta,delta)<cutoff*cutoff): return True
+        return False
     for point,element in zip(xyz,elements):
-        if element=='O': cutoff=oxygen_cut
-        elif element=='H': cutoff=hydrogen_cut
-        else: cutoff=virtual_cut
+        cutoff=oxygen_cut if element=='O' else (hydrogen_cut if element=='H' else virtual_cut)
         cutoff2=cutoff*cutoff; base=np.floor(point/cell_width).astype(int)
         for dx in (-1,0,1):
             for dy in (-1,0,1):
@@ -1203,7 +1214,7 @@ def _apply_opc_solvation(items,fixed,box,cfg):
                     elements=[atom['element'] for atom in water['atoms']]
                     if _water_overlaps(
                         xyz,elements,cells,
-                        oxygen_cut,hydrogen_cut,virtual_cut
+                        oxygen_cut,hydrogen_cut,virtual_cut,box=box
                     ):
                         rejected+=1
                         continue
@@ -1221,6 +1232,10 @@ def _apply_opc_solvation(items,fixed,box,cfg):
                         'leaflet':side,
                         'species':'OPC'
                     })
+                    # V0.16.0 register accepted OPC water in collision cells
+                    for accepted_point,accepted_element in zip(xyz,elements):
+                        accepted_key=tuple(np.floor(accepted_point/4.0).astype(int))
+                        cells[accepted_key].append((accepted_point,accepted_element))
 
     items.extend(accepted)
     new_box=np.array([box[0],box[1],top-bottom])
@@ -1379,10 +1394,15 @@ def _replace_opc_with_ions(items,cation_name,cation_resname,cation_element,
         for idx,item in candidates:
             if idx in selected_indices: continue
             point=np.asarray(item['anchor'],float)
-            if fixed_points.size and np.min(np.linalg.norm(fixed_points-point,axis=1))<minimum_fixed:
-                continue
-            if selected and min(np.linalg.norm(point-other[1]) for other in selected)<minimum_ion:
-                continue
+            periodic_box=cfg.get('_periodic_box_angstrom')
+            if fixed_points.size:
+                delta=fixed_points-point
+                if periodic_box is not None: delta=_mic_delta(delta,np.asarray(periodic_box,float))
+                if np.min(np.linalg.norm(delta,axis=1))<minimum_fixed: continue
+            if selected:
+                delta=np.asarray([other[1] for other in selected])-point
+                if periodic_box is not None: delta=_mic_delta(delta,np.asarray(periodic_box,float))
+                if np.min(np.linalg.norm(delta,axis=1))<minimum_ion: continue
             selected_indices.add(idx); selected.append((kind,point,idx,name,resname,element)); placed+=1
             if placed==count: break
         if placed!=count:
@@ -1621,6 +1641,16 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
     coordinate_name=top_cfg.get('output_rst7','coordinates.rst7')
     combined.save(str(out/topology_name),overwrite=True)
     combined.save(str(out/coordinate_name),format='rst7',overwrite=True)
+    validation_cfg=cfg.get('final_validation',{})
+    final_validation_report=validate_final_system(
+        out/topology_name,out/coordinate_name,
+        unrelated_cutoff_angstrom=float(validation_cfg.get('unrelated_atom_cutoff_angstrom',0.5)),
+        heavy_cutoff_angstrom=float(validation_cfg.get('nonbonded_heavy_cutoff_angstrom',1.0)),
+        bond_offset_angstrom=float(validation_cfg.get('bond_length_offset_angstrom',0.5)),
+        energy_threshold_kj_mol=float(validation_cfg.get('energy_threshold_kj_mol',1.0e12)),
+        cpptraj_cutoff_angstrom=float(validation_cfg.get('cpptraj_cutoff_angstrom',10.0)),
+        report_limit=int(validation_cfg.get('report_limit',100)),
+        report_path=out/'final_validation.json')
     retained_input_waters=sum(
         residue.name.strip() in {'WAT','HOH','OPC'} for residue in solute.residues)
     result={'solute_prmtop':str(solute_prmtop),'solute_coordinates':str(solute_rst7),
@@ -1640,59 +1670,92 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
             'final_charge_e':final_charge,'output_prmtop':str(out/topology_name),
             'output_rst7':str(out/coordinate_name),
             'solute_preservation_audit':solute_preservation_audit,
-            'solute_bonds_preserved':solute_preservation_audit['bond_definitions_preserved']}
+            'solute_bonds_preserved':solute_preservation_audit['bond_definitions_preserved'],
+            'final_validation':final_validation_report}
     return final_items,result,combined
 
 # V0.15.0 MEMBRANE-ONLY BUILDER
-def _build_membrane_only_host(molecules,box_xy,target_per_leaflet,rng):
-    """Tile the validated POPC patch and select an exact symmetric host membrane."""
-    box_xy=np.asarray(box_xy,float)
-    if box_xy.shape!=(2,) or np.any(box_xy<=0):
+def _build_membrane_only_host(molecules,reference_box,requested_box_xy,rng):
+    """Build the nearest complete periodic reference supercell.
+
+    The requested X/Y dimensions are preferences. Each final dimension is an
+    integer multiple of the validated reference CRYST1 vector. Every molecule
+    in the selected supercell is retained, so no vacancies or incompatible
+    periodic crop are introduced.
+    """
+    requested=np.asarray(requested_box_xy,float)
+    reference_box=np.asarray(reference_box,float)
+    if requested.shape!=(2,) or np.any(requested<=0):
         raise ValueError('membrane_only.box_xy_angstrom must contain two positive values')
-    target=int(target_per_leaflet)
-    if target<=0: raise ValueError('membrane_only.target_per_leaflet must be positive')
-
-    anchors=np.array([molecule['anchor'][:2] for molecule in molecules],float)
-    span=np.ptp(anchors,axis=0)
-    # Reference molecules are already periodically arranged. Tile far enough to
-    # cover the requested rectangle, then crop by complete-molecule anchors.
-    x_period=max(float(span[0]),1.0)
-    y_period=max(float(span[1]),1.0)
-    nx=int(math.ceil(box_xy[0]/x_period))+3
-    ny=int(math.ceil(box_xy[1]/y_period))+3
-    candidates={'upper':[],'lower':[]}
-    ref_center=0.5*(anchors.min(axis=0)+anchors.max(axis=0))
-    for ix in range(-nx,nx+1):
-        for iy in range(-ny,ny+1):
-            tile=np.array([ix*x_period,iy*y_period],float)-ref_center
+    if reference_box.size<2 or np.any(reference_box[:2]<=0):
+        raise ValueError('Validated POPC reference has invalid CRYST1 dimensions')
+    repeats=np.maximum(1,np.rint(requested/reference_box[:2]).astype(int))
+    # If nearest rounding undershoots by more than half a cell, ceil naturally
+    # wins. rint provides the mathematically nearest commensurate supercell.
+    actual=reference_box[:2]*repeats
+    selected=[]
+    for ix in range(int(repeats[0])):
+        for iy in range(int(repeats[1])):
+            shift=np.array([ix*reference_box[0],iy*reference_box[1],0.0])
             for molecule in molecules:
-                anchor_xy=molecule['anchor'][:2]+tile
-                if (-box_xy[0]/2<=anchor_xy[0]<box_xy[0]/2 and
-                    -box_xy[1]/2<=anchor_xy[1]<box_xy[1]/2):
-                    shift=np.array([tile[0],tile[1],0.0])
-                    xyz,anchor,elements=_atom_arrays_from_molecule(molecule,shift=shift)
-                    candidates[molecule['leaflet']].append({
-                        'molecule':molecule,'xyz':xyz,'anchor':anchor,
-                        'elements':elements,'leaflet':molecule['leaflet'],'species':'POPC'})
+                xyz,anchor,elements=_atom_arrays_from_molecule(molecule,shift=shift)
+                selected.append({'molecule':molecule,'xyz':xyz,'anchor':anchor,
+                    'elements':elements,'leaflet':molecule['leaflet'],'species':'POPC'})
+    counts=Counter(item['leaflet'] for item in selected)
+    if counts['upper']!=counts['lower']:
+        raise RuntimeError(f'Periodic host is leaflet-asymmetric: {dict(counts)}')
+    # Shift the complete supercell so X/Y are centered near zero. This is a
+    # uniform translation and preserves the validated periodic seam.
+    shift_xy=-0.5*actual
+    for item in selected:
+        item['xyz'][:,:2]+=shift_xy
+        item['anchor'][:2]+=shift_xy
+    report={
+        'box_mode':'nearest_commensurate_reference_supercell',
+        'requested_box_xy_angstrom':[float(v) for v in requested],
+        'reference_box_xy_angstrom':[float(v) for v in reference_box[:2]],
+        'reference_repeats_xy':[int(v) for v in repeats],
+        'actual_box_xy_angstrom':[float(v) for v in actual],
+        'adjustment_xy_angstrom':[float(v) for v in actual-requested],
+        'selected_sites_per_leaflet':int(counts['upper']),
+        'selected_total_sites':len(selected),
+    }
+    return selected,actual,report
 
-    selected=[]; diagnostics={}
-    for leaf in ('upper','lower'):
-        pool=candidates[leaf]
-        if len(pool)<target:
-            raise RuntimeError(
-                f'Only {len(pool)} POPC sites are available in the {leaf} leaflet '
-                f'for requested target {target}. Increase box_xy_angstrom.'
-            )
-        # Prefer a spatially uniform subset when cropping yields more sites than
-        # requested. Seeded jitter changes replicas without creating dense holes.
-        jitter=rng.random(len(pool))*1e-3
-        radii=np.array([np.dot(item['anchor'][:2],item['anchor'][:2]) for item in pool])
-        order=np.argsort(radii+jitter)
-        chosen=[pool[int(index)] for index in order[:target]]
-        selected.extend(chosen)
-        diagnostics[leaf]={'available_sites':len(pool),'selected_sites':target}
-    return selected,diagnostics
 
+def _mic_delta(delta,box):
+    box=np.asarray(box,float)
+    return delta-box*np.rint(delta/box)
+
+
+def _periodic_candidate_valid(candidate_xyz,candidate_elements,environment,box,cfg):
+    """Vectorized exact minimum-image validation against all other molecules."""
+    box=np.asarray(box,float)
+    other_xyz=[]; other_elements=[]
+    for item in environment:
+        other_xyz.extend(np.asarray(item['xyz'],float))
+        other_elements.extend(item.get('elements',[atom['element'] for atom in item['molecule']['atoms']]))
+    if not other_xyz:
+        return True,0.0,{'lipid_heavy_heavy':999.0,'lipid_heavy_hydrogen':999.0,'lipid_hydrogen_hydrogen':999.0}
+    other_xyz=np.asarray(other_xyz,float); other_elements=np.asarray(other_elements)
+    hh=1.5; hx=1.05; xx=float(cfg.get('packing',{}).get('lipid_hydrogen_hydrogen_angstrom',1.15))
+    minima={'fixed_heavy_lipid_heavy':999.0,'fixed_heavy_lipid_hydrogen':999.0,
+            'lipid_heavy_heavy':999.0,'lipid_heavy_hydrogen':999.0,'lipid_hydrogen_hydrogen':999.0}
+    score=0.0
+    for point,element in zip(np.asarray(candidate_xyz,float),candidate_elements):
+        delta=_mic_delta(other_xyz-point,box)
+        distances=np.linalg.norm(delta,axis=1)
+        if element=='H':
+            hmask=other_elements=='H'; xmask=~hmask
+            if np.any(hmask): minima['lipid_hydrogen_hydrogen']=min(minima['lipid_hydrogen_hydrogen'],float(distances[hmask].min()))
+            if np.any(xmask): minima['lipid_heavy_hydrogen']=min(minima['lipid_heavy_hydrogen'],float(distances[xmask].min()))
+            if np.any(hmask & (distances<xx)) or np.any(xmask & (distances<hx)): return False,1e9,minima
+        else:
+            hmask=other_elements=='H'; xmask=~hmask
+            if np.any(hmask): minima['lipid_heavy_hydrogen']=min(minima['lipid_heavy_hydrogen'],float(distances[hmask].min()))
+            if np.any(xmask): minima['lipid_heavy_heavy']=min(minima['lipid_heavy_heavy'],float(distances[xmask].min()))
+            if np.any(hmask & (distances<hx)) or np.any(xmask & (distances<hh)): return False,1e9,minima
+    return True,score,minima
 
 def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
     """Parameterize membrane/water, add ions, and write final Amber files."""
@@ -1740,6 +1803,16 @@ def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
     coordinate_name=top_cfg.get('output_rst7','coordinates.rst7')
     final_system.save(str(out/topology_name),overwrite=True)
     final_system.save(str(out/coordinate_name),format='rst7',overwrite=True)
+    validation_cfg=cfg.get('final_validation',{})
+    final_validation_report=validate_final_system(
+        out/topology_name,out/coordinate_name,
+        unrelated_cutoff_angstrom=float(validation_cfg.get('unrelated_atom_cutoff_angstrom',0.5)),
+        heavy_cutoff_angstrom=float(validation_cfg.get('nonbonded_heavy_cutoff_angstrom',1.0)),
+        bond_offset_angstrom=float(validation_cfg.get('bond_length_offset_angstrom',0.5)),
+        energy_threshold_kj_mol=float(validation_cfg.get('energy_threshold_kj_mol',1.0e12)),
+        cpptraj_cutoff_angstrom=float(validation_cfg.get('cpptraj_cutoff_angstrom',10.0)),
+        report_limit=int(validation_cfg.get('report_limit',100)),
+        report_path=out/'final_validation.json')
     return final_items,{
         'mode':'membrane_only','raw_preion_charge_e':raw_preion_charge,
         'preion_system_charge_e':preion_charge,'raw_final_charge_e':raw_final_charge,
@@ -1752,24 +1825,27 @@ def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
         'lipid21_interchange_preion':preion_interchange,
         'lipid21_interchange_final':final_interchange,
         'output_prmtop':str(out/topology_name),'output_rst7':str(out/coordinate_name),
+        'final_validation':final_validation_report,
     },final_system
 
 
 def _build_membrane_only(config_path,cfg):
     settings=cfg.get('membrane_only',{})
     box_xy=np.asarray(settings.get('box_xy_angstrom',[110.0,110.0]),float)
-    target_per_leaflet=int(settings.get('target_per_leaflet',200))
-    target_total=int(settings.get('target_total_lipids',2*target_per_leaflet))
-    if target_total!=2*target_per_leaflet:
-        raise ValueError('target_total_lipids must equal 2 * target_per_leaflet')
+    # Requested counts are advisory in commensurate mode. The complete
+    # reference supercell determines the simulation-safe exact count.
     rng=np.random.default_rng(int(cfg.get('build',{}).get('seed',1001)))
     reference=Path(cfg['reference_library']['POPC']).expanduser().resolve()
-    molecules,_reference_box=parse_reference(reference)
-    assembled,host_report=_build_membrane_only_host(molecules,box_xy,target_per_leaflet,rng)
+    molecules,reference_box=parse_reference(reference)
+    assembled,actual_box_xy,host_report=_build_membrane_only_host(
+        molecules,reference_box,box_xy,rng)
+    target_per_leaflet=int(host_report['selected_sites_per_leaflet'])
+    target_total=int(host_report['selected_total_sites'])
     lower=-float(settings.get('half_thickness_angstrom',17.9))
     upper=+float(settings.get('half_thickness_angstrom',17.9))
-    box=np.array([box_xy[0],box_xy[1],float(cfg.get('membrane',{}).get('box_z_angstrom',96.0))])
+    box=np.array([actual_box_xy[0],actual_box_xy[1],float(cfg.get('membrane',{}).get('box_z_angstrom',96.0))])
     fixed=[]
+    cfg['_periodic_box_angstrom']=[float(box[0]),float(box[1]),float(box[2])]
     assembled,composition_report=_apply_complex_composition(
         assembled,fixed,lower,upper,cfg,rng)
     assembled,box,solvent_report=_apply_opc_solvation(
@@ -1781,7 +1857,7 @@ def _build_membrane_only(config_path,cfg):
     final_system.save(str(output_pdb),overwrite=True)
     counts=Counter((item['species'],item['leaflet']) for item in assembled)
     report={
-        'version':'0.15.1-membrane-only-custom-sterol','build_mode':'membrane_only',
+        'version':'0.16.0-cpptraj-final-gate','build_mode':'membrane_only',
         'seed':int(cfg.get('build',{}).get('seed',1001)),
         'box_angstrom':[float(value) for value in box],
         'host_selection':host_report,
@@ -1891,7 +1967,7 @@ def build(config_path):
     heterogens=Counter(a['resname'] for a in fixed if a['record']=='HETATM')
     hydrogens=sum(a['element']=='H' for a in fixed)
     report={
-      'version':'0.15.1-membrane-only-custom-sterol','input_pdb':str(input_path),'input_sha256':sha256(input_path),
+      'version':'0.16.0-cpptraj-final-gate','input_pdb':str(input_path),'input_sha256':sha256(input_path),
       'orientation_source':'OPM','membrane_geometry_source':membrane_geometry_source,
       'pdb_serialization':{'input_terminal_records_deferred':removed_terminal_records,'input_conect_records_omitted':removed_connectivity_records,'single_final_END_record':True},
       'fixed_input':{'physical_coordinate_records':len(fixed),

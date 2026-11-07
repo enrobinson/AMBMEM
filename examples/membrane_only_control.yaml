@@ -66,3 +66,11 @@ ions:
 output:
   directory: control_membrane_replica_01
   pdb_name: system_membrane_solvated.pdb
+
+final_validation:
+  unrelated_atom_cutoff_angstrom: 0.5
+  nonbonded_heavy_cutoff_angstrom: 1.0
+  bond_length_offset_angstrom: 0.5
+  cpptraj_cutoff_angstrom: 10.0
+  energy_threshold_kj_mol: 1.0e12
+  report_limit: 100

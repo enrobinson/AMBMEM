@@ -40,3 +40,14 @@ pre_membrane.rst7
 *.trr
 *.ncrst
 *.restrt
+
+# Local AMBMEM development patch artifacts
+patch_v*.py
+*.pre_v*_backup
+*.before_*
+
+# Local AMBMEM patch and backup files
+patch_v*.py
+update_ambmem_*_docs.py
+*.pre_v*_backup
+*.before_*
