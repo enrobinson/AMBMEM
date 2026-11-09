@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.3 Research Preview
+
+### Canonical replica topology ordering
+
+- Assigns every periodic host-lipid site a stable canonical site ID.
+- Preserves the site ID when POPC is replaced by cholesterol, POPS,
+  POPE, or a user-supplied custom sterol.
+- Sorts complete membrane molecules deterministically before solvation
+  and Amber topology generation.
+- Uses seed-independent ordering by species, leaflet, and host-site ID.
+- Maintains identical dry residue and atom ordering across replicas
+  generated from the same composition.
+- Maintains identical ion counts and ion ordering across replicas.
+- Allows OPC water counts to vary with solvent-exclusion geometry.
+- Supports one shared topology after complete-water normalization.
+
+### Internal validation
+
+- Three FFM replicas had identical dry and ion ordering.
+- After matching all replicas to 14,211 complete OPC waters, one
+  canonical FFM topology passed the full periodic and CPPTRAJ gate
+  with all three restart files.
+- TMS replicas were tested using the same canonical-ordering and
+  matched-water workflow.
+- AMBMEM does not perform hydrogen mass repartitioning. HMR may be
+  applied once afterward to the validated shared topology.
+
 ## 0.1.2 Research Preview
 
 ### Critical fixes

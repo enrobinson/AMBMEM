@@ -1,4 +1,5 @@
 from pathlib import Path
+# V0.16.3 CANONICAL REPLICA ATOM ORDER
 # V0.16.2 COMMENSURATE PERIODIC BUILDER
 # V0.16.0 CPPTRAJ EXACT-FINAL-PAIR GATE
 from .final_validation import validate_final_system
@@ -241,6 +242,7 @@ def _place_exact_custom_sterol_target(items,eligible,target,template,fixed_cells
         if candidate is None:
             failures.append({'site_index':index,'reason':'no_valid_custom_sterol_candidate'})
             continue
+        candidate['canonical_site_id']=items[index].get('canonical_site_id',(index,))
         items[index]=candidate
         placed.append({'site_index':index,'score':candidate['score'],
                        'minimum_distances':candidate['minimum_distances']})
@@ -790,6 +792,7 @@ def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg
             failures.append({'site_index':index,'reason':'final_recheck_failed','minimum_distances':minima})
             continue
         candidate['score']=float(score); candidate['minimum_distances']=minima
+        candidate['canonical_site_id']=items[index].get('canonical_site_id',(index,))
         items[index]=candidate
         placed.append({'site_index':index,'score':float(score),'minimum_distances':minima})
     if len(placed)!=target:
@@ -822,6 +825,7 @@ def _place_exact_pops_target(items,eligible,target,donors,fixed_cells,cfg,rng,le
             failures.append({'site_index':index,'reason':'no_valid_pops_conversion'})
             continue
         score,attempt,minima=best
+        attempt['canonical_site_id']=items[index].get('canonical_site_id',(index,))
         items[index]=attempt
         placed.append({'site_index':index,'score':float(score),'minimum_distances':minima})
     if len(placed)!=target:
@@ -1697,10 +1701,11 @@ def _build_membrane_only_host(molecules,reference_box,requested_box_xy,rng):
     for ix in range(int(repeats[0])):
         for iy in range(int(repeats[1])):
             shift=np.array([ix*reference_box[0],iy*reference_box[1],0.0])
-            for molecule in molecules:
+            for molecule_index,molecule in enumerate(molecules):
                 xyz,anchor,elements=_atom_arrays_from_molecule(molecule,shift=shift)
                 selected.append({'molecule':molecule,'xyz':xyz,'anchor':anchor,
-                    'elements':elements,'leaflet':molecule['leaflet'],'species':'POPC'})
+                    'elements':elements,'leaflet':molecule['leaflet'],'species':'POPC',
+                    'canonical_site_id':(int(ix),int(iy),int(molecule_index))})
     counts=Counter(item['leaflet'] for item in selected)
     if counts['upper']!=counts['lower']:
         raise RuntimeError(f'Periodic host is leaflet-asymmetric: {dict(counts)}')
@@ -1756,6 +1761,49 @@ def _periodic_candidate_valid(candidate_xyz,candidate_elements,environment,box,c
             if np.any(xmask): minima['lipid_heavy_heavy']=min(minima['lipid_heavy_heavy'],float(distances[xmask].min()))
             if np.any(hmask & (distances<hx)) or np.any(xmask & (distances<hh)): return False,1e9,minima
     return True,score,minima
+
+def _canonicalize_environment_item_order(items):
+    """Return deterministic molecular order independent of seeded site choices.
+
+    Membrane molecules are grouped by topology identity, then leaflet, then
+    stable host-site ID. Solvent remains after the membrane in deterministic
+    generation order. Ions are appended after replacing waters.
+    """
+    species_rank={'POPC':0,'POPS':1,'POPE':2,'CHL':3}
+    leaflet_rank={'upper':0,'lower':1,'positive':0,'negative':1}
+    membrane=[]; solvent=[]; other=[]
+    for generation_index,item in enumerate(items):
+        species=str(item.get('species',''))
+        if species=='OPC':
+            solvent.append((generation_index,item))
+        elif species in {'K+','Na+','Cl-','K','NA','CL'}:
+            other.append((generation_index,item))
+        else:
+            membrane.append((generation_index,item))
+
+    def membrane_key(entry):
+        generation_index,item=entry
+        species=str(item.get('species',''))
+        rank=species_rank.get(species,10)
+        # Custom residues are ordered deterministically by residue/species name.
+        custom_name=species if rank==10 else ''
+        leaflet=leaflet_rank.get(str(item.get('leaflet','')),9)
+        site=tuple(item.get('canonical_site_id',(generation_index,)))
+        return (rank,custom_name,leaflet,site)
+
+    membrane.sort(key=membrane_key)
+    solvent.sort(key=lambda entry:entry[0])
+    other.sort(key=lambda entry:(str(entry[1].get('species','')),entry[0]))
+    ordered=[item for _,item in membrane+solvent+other]
+    return ordered,{
+        'mode':'species_leaflet_canonical_site',
+        'membrane_items':len(membrane),
+        'solvent_items':len(solvent),
+        'other_items':len(other),
+        'species_order':['POPC','POPS','POPE','CHL','custom_by_species','OPC','ions'],
+        'seed_independent_topology_order':True,
+    }
+
 
 def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
     """Parameterize membrane/water, add ions, and write final Amber files."""
@@ -1848,6 +1896,7 @@ def _build_membrane_only(config_path,cfg):
     cfg['_periodic_box_angstrom']=[float(box[0]),float(box[1]),float(box[2])]
     assembled,composition_report=_apply_complex_composition(
         assembled,fixed,lower,upper,cfg,rng)
+    assembled,canonical_order_report=_canonicalize_environment_item_order(assembled)
     assembled,box,solvent_report=_apply_opc_solvation(
         assembled,fixed,box,cfg)
     out=Path(cfg['output']['directory']); out.mkdir(parents=True,exist_ok=True)
@@ -1861,6 +1910,7 @@ def _build_membrane_only(config_path,cfg):
         'seed':int(cfg.get('build',{}).get('seed',1001)),
         'box_angstrom':[float(value) for value in box],
         'host_selection':host_report,
+        'canonical_ordering':canonical_order_report,
         'requested_membrane':{'target_total_lipids':target_total,
             'target_per_leaflet':target_per_leaflet,'box_xy_angstrom':[float(v) for v in box_xy]},
         'lipid_counts':{f'{species}_{leaflet}':count
@@ -1924,6 +1974,7 @@ def build(config_path):
                           'elements':[a['element'] for a in accepted['molecule']['atoms']],
                           'leaflet':accepted['leaflet'],'species':'POPC'})
     assembled,complex_report=_apply_complex_composition(assembled,fixed,lower,upper,cfg,rng)
+    assembled,canonical_order_report=_canonicalize_environment_item_order(assembled)
     assembled,box,solvent_report=_apply_opc_solvation(assembled,fixed,box,cfg)
     out=Path(cfg['output']['directory']); out.mkdir(exist_ok=True)
     assembled,topology_report,_combined_topology=_prepare_topology_and_ions(
@@ -1982,6 +2033,7 @@ def build(config_path):
         'boundary_refilled':dict(Counter(item['leaflet'] for item in boundary_refilled)),
         'interior_or_unfillable_removed':dict(Counter(item['leaflet'] for item in interior_removed))},
       'complex_composition':complex_report,
+      'canonical_ordering':canonical_order_report,
       'solvent':solvent_report,
       'topology_and_ions':topology_report,
       'boundary_refill_details':[{k:v for k,v in item.items() if k not in ('molecule','xyz')} for item in boundary_refilled],

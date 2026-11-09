@@ -141,3 +141,28 @@ Replicas from the same composition and periodic supercell keep lipid, cholestero
 
 Users who require one shared topology may normalize waters afterward with ParmEd and validate that shared topology against every restart. AMBMEM does not apply hydrogen mass repartitioning.
 <!-- END AMBMEM-0.1.2-SAFETY -->
+
+## Canonical replica topology ordering
+
+AMBMEM assigns each periodic host-lipid location a stable site ID.
+When a site is converted to cholesterol, POPS, POPE, or a user-supplied
+custom sterol, the replacement retains that ID.
+
+Before topology generation, membrane molecules are ordered
+deterministically by:
+
+1. molecular species
+2. leaflet
+3. canonical host-site ID
+
+This makes the dry residue and atom order independent of the random
+seed. Replicas generated from the same composition retain identical
+lipid, sterol, and ion ordering while containing different coordinates.
+
+Accepted OPC water counts can differ because sterol positions alter the
+solvent-excluded volume. Users requiring one shared topology can remove
+complete excess OPC residues to a common count, then validate one
+canonical topology against every matched restart.
+
+AMBMEM does not apply hydrogen mass repartitioning. HMR can be applied
+once afterward to the validated shared topology.
