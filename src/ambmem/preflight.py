@@ -40,17 +40,131 @@ def normalize_config(cfg: dict) -> dict:
         refs["POPC"] = str(reference_path("POPC"))
 
     complex_cfg = cfg.get("complex_membrane", {})
-    if float(complex_cfg.get("POPS_fraction", 0.0)) > 0 or any(
-        float(complex_cfg.get("leaflets", {}).get(leaf, {}).get("POPS_fraction", 0.0)) > 0
-        for leaf in ("upper", "lower")
+
+    # The protein builder historically reads POPC_reference from
+    # complex_membrane. Resolve that field through package resources
+    # even when an older YAML contains a relative path.
+    popc_reference = complex_cfg.get(
+        "POPC_reference",
+        "packaged:POPC",
+    )
+
+    if (
+        not str(popc_reference).startswith("packaged:")
+        and not Path(str(popc_reference)).expanduser().is_file()
     ):
-        complex_cfg["POPS_reference"] = resolve_reference(
-            str(complex_cfg.get("POPS_reference", "packaged:POPS"))
+        popc_reference = "packaged:POPC"
+
+    complex_cfg["POPC_reference"] = resolve_reference(
+        str(popc_reference)
+    )
+
+    modern_composition = (
+        cfg.get("membrane", {})
+        .get("composition", {})
+    )
+
+    modern_pops = any(
+        float(
+            modern_composition
+            .get(leaf, {})
+            .get("POPS", 0.0)
+        ) > 0.0
+        for leaf in ("upper", "lower")
+    )
+
+    legacy_pops = (
+        float(
+            complex_cfg.get(
+                "POPS_fraction",
+                0.0,
+            )
+        ) > 0.0
+        or any(
+            float(
+                complex_cfg
+                .get("leaflets", {})
+                .get(leaf, {})
+                .get("POPS_fraction", 0.0)
+            ) > 0.0
+            for leaf in ("upper", "lower")
         )
-    if complex_cfg.get("enabled", False):
-        complex_cfg["CHL_reference"] = resolve_reference(
-            str(complex_cfg.get("CHL_reference", "packaged:CHL"))
+    )
+
+    if modern_pops or legacy_pops:
+        complex_cfg["POPS_reference"] = (
+            resolve_reference(
+                str(
+                    complex_cfg.get(
+                        "POPS_reference",
+                        "packaged:POPS",
+                    )
+                )
+            )
         )
+
+    modern_pope = any(
+        float(
+            modern_composition
+            .get(leaf, {})
+            .get("POPE", 0.0)
+        ) > 0.0
+        for leaf in ("upper", "lower")
+    )
+
+    legacy_pope = (
+        float(
+            complex_cfg.get(
+                "POPE_fraction",
+                0.0,
+            )
+        ) > 0.0
+        or any(
+            float(
+                complex_cfg
+                .get("leaflets", {})
+                .get(leaf, {})
+                .get("POPE_fraction", 0.0)
+            ) > 0.0
+            for leaf in ("upper", "lower")
+        )
+    )
+
+    if modern_pope or legacy_pope:
+        complex_cfg["POPE_reference"] = (
+            resolve_reference(
+                str(
+                    complex_cfg.get(
+                        "POPE_reference",
+                        "packaged:POPE",
+                    )
+                )
+            )
+        )
+
+    modern_chl = any(
+        float(
+            modern_composition
+            .get(leaf, {})
+            .get("CHL", 0.0)
+        ) > 0.0
+        for leaf in ("upper", "lower")
+    )
+
+    if complex_cfg.get("enabled", False) or modern_chl:
+        complex_cfg["enabled"] = True
+
+        complex_cfg["CHL_reference"] = (
+            resolve_reference(
+                str(
+                    complex_cfg.get(
+                        "CHL_reference",
+                        "packaged:CHL",
+                    )
+                )
+            )
+        )
+
     cfg["complex_membrane"] = complex_cfg
     return cfg
 
@@ -113,23 +227,241 @@ def validate_config(path: str | Path, *, tleap_template_test: bool = True) -> tu
                 raise PreflightError(f"Missing topology input: topology.{key}")
         messages.append("Protein/topology inputs: PASS")
 
-    composition = cfg.get("complex_membrane", {})
+    legacy_composition = cfg.get("complex_membrane", {})
+    modern_composition = (
+        cfg.get("membrane", {})
+        .get("composition", {})
+    )
+
+    # Import the same deterministic integer allocator used by the
+    # builder so preflight and production cannot disagree.
+    from .protein_popc import _allocate_leaflet_counts
+
+    if mode == "membrane_only":
+        from .resources import reference_path as packaged_reference_path
+
+        popc_reference = packaged_reference_path("POPC")
+
+        cryst1 = next(
+            (
+                line
+                for line in Path(popc_reference)
+                .read_text(errors="replace")
+                .splitlines()
+                if line.startswith("CRYST1")
+            ),
+            None,
+        )
+
+        if cryst1 is None:
+            raise PreflightError(
+                "Packaged POPC reference lacks a CRYST1 record"
+            )
+
+        reference_x = float(cryst1[6:15])
+        reference_y = float(cryst1[15:24])
+
+        requested_x = float(
+            cfg["membrane_only"]["box_xy_angstrom"][0]
+        )
+
+        requested_y = float(
+            cfg["membrane_only"]["box_xy_angstrom"][1]
+        )
+
+        repeats_x = max(
+            1,
+            round(requested_x / reference_x),
+        )
+
+        repeats_y = max(
+            1,
+            round(requested_y / reference_y),
+        )
+
+        # The validated POPC reference has 64 molecules per
+        # leaflet in each unit cell.
+        projected_per_leaflet = (
+            64 * repeats_x * repeats_y
+        )
+
+        messages.append(
+            "Periodic supercell projection: "
+            f"{repeats_x} x {repeats_y}; "
+            f"{projected_per_leaflet} molecules per leaflet; "
+            f"actual XY={reference_x * repeats_x:.3f} x "
+            f"{reference_y * repeats_y:.3f} A"
+        )
+    else:
+        projected_per_leaflet = None
+
     for leaf in ("upper", "lower"):
-        leaf_cfg = composition.get("leaflets", {}).get(leaf, {})
-        chl = float(leaf_cfg.get("CHL_fraction", composition.get("CHL_fraction", 0.0)))
-        pops = float(leaf_cfg.get("POPS_fraction", composition.get("POPS_fraction", 0.0)))
+        modern_leaf = modern_composition.get(
+            leaf,
+            {},
+        )
+
+        legacy_leaf = (
+            legacy_composition
+            .get("leaflets", {})
+            .get(leaf, {})
+        )
+
+        if modern_leaf:
+            fractions = {
+                "POPC": float(modern_leaf.get("POPC", 0.0)),
+                "POPE": float(modern_leaf.get("POPE", 0.0)),
+                "POPS": float(modern_leaf.get("POPS", 0.0)),
+                "CHL": float(modern_leaf.get("CHL", 0.0)),
+            }
+
+            composition_source = "membrane.composition"
+        else:
+            pope = float(
+                legacy_leaf.get(
+                    "POPE_fraction",
+                    legacy_composition.get(
+                        "POPE_fraction",
+                        0.0,
+                    ),
+                )
+            )
+
+            pops = float(
+                legacy_leaf.get(
+                    "POPS_fraction",
+                    legacy_composition.get(
+                        "POPS_fraction",
+                        0.0,
+                    ),
+                )
+            )
+
+            chl = float(
+                legacy_leaf.get(
+                    "CHL_fraction",
+                    legacy_composition.get(
+                        "CHL_fraction",
+                        0.0,
+                    ),
+                )
+            )
+
+            popc = float(
+                legacy_leaf.get(
+                    "POPC_fraction",
+                    1.0 - pope - pops - chl,
+                )
+            )
+
+            fractions = {
+                "POPC": popc,
+                "POPE": pope,
+                "POPS": pops,
+                "CHL": chl,
+            }
+
+            composition_source = "complex_membrane legacy fields"
+
         custom = 0.0
         custom_block = cfg.get("custom_sterols", {})
+
         if custom_block.get("enabled", False):
             species = custom_block.get("species", [])
+
             if len(species) != 1:
-                raise PreflightError("Exactly one custom sterol may be active in this research preview")
-            s = species[0]
-            custom = float(s.get("leaflets", {}).get(leaf, {}).get("fraction", s.get("fraction", 0.0)))
-            _validate_custom_sterol(s, tleap_template_test=tleap_template_test)
-        if min(chl, pops, custom) < 0 or chl + pops + custom > 1.0 + 1e-12:
-            raise PreflightError(f"Invalid {leaf} fractions: CHL={chl}, POPS={pops}, custom={custom}")
-        messages.append(f"{leaf} composition: PASS (POPC={1-chl-pops-custom:.3f}, CHL={chl:.3f}, POPS={pops:.3f}, custom={custom:.3f})")
+                raise PreflightError(
+                    "Exactly one custom sterol may be active "
+                    "in this research preview"
+                )
+
+            settings = species[0]
+
+            custom = float(
+                settings
+                .get("leaflets", {})
+                .get(leaf, {})
+                .get(
+                    "fraction",
+                    settings.get("fraction", 0.0),
+                )
+            )
+
+            _validate_custom_sterol(
+                settings,
+                tleap_template_test=tleap_template_test,
+            )
+
+        if custom > 0.0:
+            fractions["CUSTOM_STEROL"] = custom
+
+        if any(value < 0.0 for value in fractions.values()):
+            raise PreflightError(
+                f"Invalid negative {leaf} fractions: "
+                f"{fractions}"
+            )
+
+        fraction_total = sum(fractions.values())
+
+        if abs(fraction_total - 1.0) > 1.0e-8:
+            raise PreflightError(
+                f"{leaf} fractions must sum to 1.0; "
+                f"found {fraction_total:.12f}: "
+                f"{fractions}"
+            )
+
+        message = (
+            f"{leaf} composition: PASS "
+            f"[{composition_source}] "
+            f"(POPC={fractions.get('POPC', 0.0):.3f}, "
+            f"POPE={fractions.get('POPE', 0.0):.3f}, "
+            f"POPS={fractions.get('POPS', 0.0):.3f}, "
+            f"CHL={fractions.get('CHL', 0.0):.3f}, "
+            f"custom={fractions.get('CUSTOM_STEROL', 0.0):.3f})"
+        )
+
+        messages.append(message)
+
+        if projected_per_leaflet is not None:
+            allocation_order = (
+                "POPC",
+                "POPE",
+                "POPS",
+                "CHL",
+            )
+
+            allocation_fractions = {
+                name: fractions.get(name, 0.0)
+                for name in allocation_order
+            }
+
+            if custom > 0.0:
+                allocation_order = (
+                    "POPC",
+                    "POPE",
+                    "POPS",
+                    "CHL",
+                    "CUSTOM_STEROL",
+                )
+
+                allocation_fractions[
+                    "CUSTOM_STEROL"
+                ] = custom
+
+            projected_counts = _allocate_leaflet_counts(
+                projected_per_leaflet,
+                allocation_fractions,
+                allocation_order,
+            )
+
+            messages.append(
+                f"{leaf} projected integer counts: "
+                + ", ".join(
+                    f"{name}={count}"
+                    for name, count
+                    in projected_counts.items()
+                )
+            )
 
     output = Path(cfg.get("output", {}).get("directory", "ambmem_output"))
     output.parent.mkdir(parents=True, exist_ok=True)
