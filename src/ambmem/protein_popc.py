@@ -1322,17 +1322,29 @@ def _place_chl_item(host,donors,fixed_cells,lipid_items,cfg,rng):
 # V0.12.3 CONTIGUOUS OPC TILING
 # V0.12.4 TLEAP-CONTIGUOUS OPC VOLUME
 def _validate_replacement_item(candidate,host_index,items,fixed_cells,cfg):
-    """Validate a replacement against every other molecule with periodic MIC."""
-    environment=[item for index,item in enumerate(items) if index!=host_index]
+    """Validate a replacement against every other molecule with periodic MIC.
+
+    Mixed-lipid builds are periodic. Refuse a silent nonperiodic fallback,
+    because it can accept candidates that overlap across an X/Y boundary in
+    the exact final Amber system.
+    """
+    environment=[
+        item
+        for index,item in enumerate(items)
+        if index!=host_index
+    ]
     box=cfg.get('_periodic_box_angstrom')
-    if box is not None:
-        return _periodic_candidate_valid(candidate['xyz'],candidate['elements'],environment,box,cfg)
-    lipid_cells=_build_atom_cells(environment,4.0)
-    return _candidate_valid(
-        candidate['xyz'],candidate['elements'],fixed_cells,lipid_cells,4.0,
-        float(cfg.get('packing',{}).get('fixed_heavy_lipid_heavy_angstrom',2.0)),
-        float(cfg.get('packing',{}).get('fixed_heavy_lipid_hydrogen_angstrom',1.2)),
-        1.5,1.05,float(cfg.get('packing',{}).get('lipid_hydrogen_hydrogen_angstrom',1.15)))
+    if box is None:
+        raise RuntimeError(
+            'Periodic box must be initialized before mixed-lipid replacement'
+        )
+    return _periodic_candidate_valid(
+        candidate['xyz'],
+        candidate['elements'],
+        environment,
+        box,
+        cfg,
+    )
 
 
 # V0.1.5 GLOBAL EXACT CHOLESTEROL PLACEMENT
@@ -2774,7 +2786,18 @@ def build(config_path):
         assembled.append({'molecule':accepted['molecule'],'xyz':accepted['xyz'],'anchor':np.asarray(accepted['final_anchor']),
                           'elements':[a['element'] for a in accepted['molecule']['atoms']],
                           'leaflet':accepted['leaflet'],'species':'POPC'})
-    assembled,complex_report=_apply_complex_composition(assembled,fixed,lower,upper,cfg,rng)
+    # Mixed-lipid replacement must use the same periodic minimum-image
+    # validation as the membrane-only pathway. The box is already the final
+    # commensurate protein-membrane host box at this stage; this assignment
+    # does not change the box or the protein exclusion geometry.
+    cfg['_periodic_box_angstrom'] = [
+        float(box[0]),
+        float(box[1]),
+        float(box[2]),
+    ]
+    assembled,complex_report=_apply_complex_composition(
+        assembled,fixed,lower,upper,cfg,rng
+    )
     assembled,canonical_order_report=_canonicalize_environment_item_order(assembled)
     assembled,box,solvent_report=_apply_opc_solvation(assembled,fixed,box,cfg)
     out=Path(cfg['output']['directory']); out.mkdir(exist_ok=True)

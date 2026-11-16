@@ -35,3 +35,39 @@ def test_high_cholesterol_benchmark_target_is_exact():
     )
     assert result=={"POPC":154,"POPE":25,"POPS":0,"CHL":77}
     assert sum(result.values())==256
+
+
+def test_mixed_replacement_refuses_missing_periodic_box(monkeypatch):
+    """Periodic replacement must never silently fall back to Cartesian checks."""
+    import pytest
+    from ambmem import protein_popc as builder
+
+    candidate = {
+        "xyz": [],
+        "elements": [],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="Periodic box must be initialized",
+    ):
+        builder._validate_replacement_item(
+            candidate=candidate,
+            host_index=0,
+            items=[{"species": "POPC"}],
+            fixed_cells={},
+            cfg={},
+        )
+
+
+def test_protein_build_sets_periodic_box_before_composition():
+    """Protein and membrane-only paths must both enable periodic replacement."""
+    import inspect
+    from ambmem import protein_popc as builder
+
+    source = inspect.getsource(builder.build)
+
+    assignment = source.index("cfg['_periodic_box_angstrom']")
+    composition = source.index("_apply_complex_composition")
+
+    assert assignment < composition
