@@ -1,4 +1,216 @@
 from pathlib import Path
+import warnings
+# V0.1.7.1 FRESH FINAL SOLUTE RELOAD
+# V0.1.7 STRUCTURAL WATER CLASH POLICY
+
+# V0.1.7 STRUCTURAL WATER CLASH POLICY
+
+# Fixed internal safety thresholds. They are intentionally not YAML options.
+_STRUCTURAL_WATER_OXYGEN_HEAVY_CUTOFF_ANGSTROM = 1.0
+_STRUCTURAL_WATER_ANY_SITE_CUTOFF_ANGSTROM = 0.5
+_STRUCTURAL_WATER_WARNING_CUTOFF_ANGSTROM = 1.5
+
+
+def _structural_water_clash_audit(solute, cfg, out=None, apply_removal=True):
+    """Run one unified audit and optionally remove the union once."""
+    pmd = _require_parmed()
+    from scipy.spatial import cKDTree
+
+    policy = str(cfg.get('structural_waters', {}).get(
+        'hard_clash_policy', 'remove')).strip().lower()
+    if policy not in {'error', 'remove', 'keep'}:
+        raise ValueError('structural_waters.hard_clash_policy must be error, remove, or keep')
+
+    working = solute.copy(pmd.Structure)
+    water_names = set(_STRUCTURAL_WATER_RESNAMES)
+    xyz = np.asarray(working.coordinates, dtype=float)
+    nonwater_all = [a.idx for a in working.atoms
+                    if a.residue.name.strip() not in water_names]
+    nonwater_heavy = [a.idx for a in working.atoms
+                      if a.residue.name.strip() not in water_names
+                      and int(getattr(a, 'atomic_number', 0) or 0) > 1
+                      and float(a.mass) > 0.0]
+    all_tree = cKDTree(xyz[nonwater_all]) if nonwater_all else None
+    heavy_tree = cKDTree(xyz[nonwater_heavy]) if nonwater_heavy else None
+
+    records = []
+    rejected = []
+    warnings_ = []
+    accepted = []
+    for residue in working.residues:
+        if residue.name.strip() not in water_names:
+            continue
+        oxygen = next((a for a in residue.atoms
+                       if int(getattr(a, 'atomic_number', 0) or 0) == 8
+                       or a.name.strip() in {'O', 'OW'}), None)
+        if oxygen is None:
+            raise RuntimeError(f'Input water residue {residue.idx+1} has no oxygen')
+
+        oh_dist = float('inf'); oh_partner = None
+        if heavy_tree is not None:
+            d, local = heavy_tree.query(xyz[oxygen.idx], k=1)
+            oh_dist = float(d)
+            p = working.atoms[nonwater_heavy[int(local)]]
+            oh_partner = f'{p.residue.name.strip()}_{p.residue.idx+1}@{p.name.strip()}'
+
+        water_indices = [a.idx for a in residue.atoms]
+        aa_dist = float('inf'); water_site = None; aa_partner = None
+        if all_tree is not None and water_indices:
+            ds, locals_ = all_tree.query(xyz[water_indices], k=1)
+            wi = int(np.argmin(ds))
+            aa_dist = float(ds[wi])
+            water_site = residue.atoms[wi].name.strip()
+            p = working.atoms[nonwater_all[int(locals_[wi])]]
+            aa_partner = f'{p.residue.name.strip()}_{p.residue.idx+1}@{p.name.strip()}'
+
+        criteria = []
+        if oh_dist < _STRUCTURAL_WATER_OXYGEN_HEAVY_CUTOFF_ANGSTROM:
+            criteria.append('oxygen_to_nonwater_heavy')
+        if aa_dist < _STRUCTURAL_WATER_ANY_SITE_CUTOFF_ANGSTROM:
+            criteria.append('any_water_site_to_nonwater_atom')
+
+        rid = residue.idx + 1
+        if criteria:
+            rejected.append(rid)
+            classification = ('reject_multiple_criteria' if len(criteria) > 1
+                              else 'reject_' + criteria[0])
+        elif oh_dist < _STRUCTURAL_WATER_WARNING_CUTOFF_ANGSTROM:
+            warnings_.append(rid); classification = 'warning_retain'
+        else:
+            accepted.append(rid); classification = 'accept'
+
+        records.append({
+            'input_residue_index_1based': rid,
+            'residue_name': residue.name.strip(),
+            'classification': classification,
+            'rejection_criteria': criteria,
+            'oxygen_to_nonwater_heavy_distance_angstrom': oh_dist,
+            'oxygen_nearest_nonwater_heavy_atom': oh_partner,
+            'minimum_any_water_site_to_nonwater_atom_distance_angstrom': aa_dist,
+            'closest_water_site': water_site,
+            'nearest_nonwater_atom_for_any_site': aa_partner,
+        })
+
+    rejected = sorted(set(rejected))
+    audit = {
+        'policy': policy,
+        'cutoffs_are_internal_not_yaml_configurable': True,
+        'oxygen_to_nonwater_heavy_cutoff_angstrom': 1.0,
+        'any_water_site_to_nonwater_atom_cutoff_angstrom': 0.5,
+        'warning_cutoff_angstrom': 1.5,
+        'input_structural_waters': len(records),
+        'rejected_structural_waters': len(rejected),
+        'hard_clashing_structural_waters': len(rejected),
+        'removed_structural_waters': 0,
+        'retained_structural_waters': len(records),
+        'warning_retained_structural_waters': len(warnings_),
+        'accepted_structural_waters': len(accepted),
+        'rejected_residue_indices_1based': rejected,
+        'hard_clash_residue_indices_1based': rejected,
+        'warning_residue_indices_1based': warnings_,
+        'waters': records,
+        'ion_replacement_eligible': False,
+        'counted_in_total_water_for_ion_target': True,
+    }
+
+    if rejected and policy == 'error':
+        if out is not None:
+            Path(out).mkdir(parents=True, exist_ok=True)
+            (Path(out)/'structural_water_cleanup.json').write_text(json.dumps(audit, indent=2)+'\n')
+        raise RuntimeError(f'Input contains {len(rejected)} rejected structural waters')
+    if rejected and policy == 'remove' and apply_removal:
+        working.strip(':' + ','.join(map(str, rejected)))
+        audit['removed_structural_waters'] = len(rejected)
+        audit['retained_structural_waters'] = len(records) - len(rejected)
+        audit['simulation_ready_allowed'] = True
+    elif rejected and policy == 'keep':
+        audit['kept_hard_clashes'] = True
+        audit['simulation_ready_allowed'] = False
+    else:
+        audit['simulation_ready_allowed'] = True
+    if out is not None:
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out)/'structural_water_cleanup.json').write_text(json.dumps(audit, indent=2)+'\n')
+    return working, audit
+
+
+def _run_cpptraj_text(commands, log_path, description):
+    result = subprocess.run(['cpptraj'], input='\n'.join(commands)+'\n',
+                            text=True, capture_output=True)
+    Path(log_path).write_text(result.stdout+'\n'+result.stderr)
+    if result.returncode != 0:
+        raise RuntimeError(f'{description} failed; see {log_path}')
+
+
+def _prepare_authoritative_solute_pair(solute_prmtop, solute_rst7, cfg, out):
+    """Order first, audit once, remove one union mask, reorder, and reload."""
+    pmd = _require_parmed()
+    out = Path(out)
+    work = out/'authoritative_solute_preprocessing'
+    work.mkdir(parents=True, exist_ok=True)
+    ordered_top = work/'01_ordered_original.prmtop'
+    ordered_rst = work/'01_ordered_original.rst7'
+    clean_top = work/'02_unified_clean.prmtop'
+    clean_rst = work/'02_unified_clean.rst7'
+    final_top = work/'03_clean_ordered.prmtop'
+    final_rst = work/'03_clean_ordered.rst7'
+
+    _run_cpptraj_text([
+        f'parm {solute_prmtop}', f'trajin {solute_rst7}',
+        f'fixatomorder parmout {ordered_top}',
+        f'trajout {ordered_rst} restart', 'run', 'quit'],
+        work/'01_fixatomorder.log', 'Initial solute fixatomorder')
+    ordered = pmd.load_file(str(ordered_top), xyz=str(ordered_rst))
+    _, audit = _structural_water_clash_audit(ordered, cfg, apply_removal=False)
+    rejected = audit['rejected_residue_indices_1based']
+    policy = audit['policy']
+
+    if rejected and policy == 'error':
+        (out/'structural_water_cleanup.json').write_text(json.dumps(audit, indent=2)+'\n')
+        raise RuntimeError(f'Input contains {len(rejected)} rejected structural waters')
+    if rejected and policy == 'remove':
+        mask = ':' + ','.join(map(str, rejected))
+        _run_cpptraj_text([
+            f'parm {ordered_top}', f'trajin {ordered_rst}', f'strip {mask}',
+            f'trajout {clean_rst} restart', 'run', 'quit'],
+            work/'02_strip_coordinates.log', 'Unified coordinate removal')
+        _run_cpptraj_text([
+            f'parm {ordered_top}', f'parmstrip {mask}', f'parmwrite out {clean_top}',
+            'run', 'quit'], work/'02_strip_topology.log', 'Unified topology removal')
+        audit['removed_structural_waters'] = len(rejected)
+        audit['retained_structural_waters'] = audit['input_structural_waters']-len(rejected)
+        audit['simulation_ready_allowed'] = True
+    else:
+        clean_top.write_bytes(ordered_top.read_bytes())
+        clean_rst.write_bytes(ordered_rst.read_bytes())
+
+    _run_cpptraj_text([
+        f'parm {clean_top}', f'trajin {clean_rst}',
+        f'fixatomorder parmout {final_top}', f'trajout {final_rst} restart',
+        'run', 'quit'], work/'03_final_fixatomorder.log', 'Final solute fixatomorder')
+    prepared = pmd.load_file(str(final_top), xyz=str(final_rst))
+    _, remaining = _structural_water_clash_audit(
+        prepared, {'structural_waters': {'hard_clash_policy': 'keep'}},
+        apply_removal=False)
+    if policy == 'remove' and remaining['rejected_structural_waters']:
+        raise RuntimeError('Unified cleanup left rejected waters: ' +
+                           str(remaining['rejected_residue_indices_1based']))
+
+    audit['preprocessing_order'] = [
+        'fixatomorder_original', 'single_unified_water_audit',
+        'single_union_removal', 'fixatomorder_cleaned', 'exact_pair_reload']
+    audit['prepared_solute_topology'] = str(final_top)
+    audit['prepared_solute_coordinates'] = str(final_rst)
+    audit['prepared_solute_atoms'] = len(prepared.atoms)
+    audit['remaining_rejected_structural_waters'] = remaining['rejected_structural_waters']
+    (out/'structural_water_cleanup.json').write_text(json.dumps(audit, indent=2)+'\n')
+    return prepared, audit, final_top, final_rst
+
+# V0.1.6 PROTECTED STRUCTURAL WATER BLOCKS
+import json
+# V0.1.5 GLOBAL EXACT CHOLESTEROL PLACEMENT
+import copy
+# V0.1.4 UNIFIED POPS POPE HEADGROUP REPLACEMENT
 # V0.16.3 CANONICAL REPLICA ATOM ORDER
 # V0.16.2 COMMENSURATE PERIODIC BUILDER
 # V0.16.0 CPPTRAJ EXACT-FINAL-PAIR GATE
@@ -20,15 +232,16 @@ def _lipid21_interchange_line(serial,atom,icode,xyz):
 def _write_lipid21_environment_files(items,prefix,box,batch_size=50):
     """Write one modular-lipid PDB and one bulk PDB for topology generation.
 
-    POPC is written PA->PC->OL; POPS is written PA->PS->OL. A TER record is
-    placed only after a complete lipid. Internal coordinates are unchanged.
+    POPC is written PA->PC->OL, POPE as PA->PE->OL, and POPS as
+    PA->PS->OL. A TER record is placed only after a complete lipid.
+    Internal coordinates are unchanged.
     """
     prefix=Path(prefix)
     modular=[]
     bulk=[]
     for item in items:
         residue_names={str(atom['resname']).strip() for atom in item['molecule']['atoms']}
-        if item.get('species') in {'POPC','POPS'} or residue_names & {'PA','PC','PS','OL'}:
+        if item.get('species') in {'POPC','POPE','POPS'} or residue_names & {'PA','PC','PE','PS','OL'}:
             modular.append(item)
         else:
             bulk.append(item)
@@ -42,8 +255,31 @@ def _write_lipid21_environment_files(items,prefix,box,batch_size=50):
         ]
         serial=1
         for item in modular:
-            headgroup='PS' if item.get('species')=='POPS' else 'PC'
-            module_rank={'PA':0,headgroup:1,'OL':2}
+            species=str(
+                item.get('species', '')
+            ).strip()
+
+            headgroup_by_species={
+                'POPC':'PC',
+                'POPE':'PE',
+                'POPS':'PS',
+            }
+
+            headgroup=headgroup_by_species.get(
+                species
+            )
+
+            if headgroup is None:
+                raise RuntimeError(
+                    f'No Lipid21 headgroup definition '
+                    f'exists for species {species!r}'
+                )
+
+            module_rank={
+                'PA':0,
+                headgroup:1,
+                'OL':2,
+            }
             indexed=list(enumerate(zip(item['molecule']['atoms'],item['xyz'])))
             indexed.sort(key=lambda entry:(
                 module_rank.get(str(entry[1][0]['resname']).strip(),99),
@@ -79,7 +315,11 @@ def _write_lipid21_environment_files(items,prefix,box,batch_size=50):
         'lipid_file_count':1 if modular else 0,
         'complete_lipid_ter_records':len(modular),
         'ter_between_lipid_modules':0,
-        'module_order':{'POPC':['PA','PC','OL'],'POPS':['PA','PS','OL']},
+        'module_order':{
+            'POPC':['PA','PC','OL'],
+            'POPE':['PA','PE','OL'],
+            'POPS':['PA','PS','OL'],
+        },
         'separation_mode':'TER_after_complete_lipid',
         'temporary_interchange_files':[str(path) for path in files],
     }
@@ -265,6 +505,203 @@ def _custom_sterol_settings(cfg):
     return settings
 
 # V0.13.6 RESTORE TOPOLOGY MAPPING HELPER
+
+# V0.1.6 PROTECTED STRUCTURAL WATER BLOCKS
+_STRUCTURAL_WATER_RESNAMES = ('WAT','HOH','OPC','TIP3','TIP4','TIP4P')
+
+
+def _split_fixed_solute_water_blocks(solute):
+    """Split an authoritative input Structure without changing atom order.
+
+    Returns fixed non-water solute, retained input waters, and an audit. The
+    retained waters are protected from generated-water ion replacement and
+    later generated-water normalization.
+    """
+    pmd=_require_parmed()
+
+    water_names=set(_STRUCTURAL_WATER_RESNAMES)
+    original_water_residues=[
+        residue for residue in solute.residues
+        if residue.name.strip() in water_names
+    ]
+    original_water_atoms=[
+        atom for residue in original_water_residues
+        for atom in residue.atoms
+    ]
+    original_water_coordinates=(
+        np.asarray(solute.coordinates,float)[
+            [atom.idx for atom in original_water_atoms]
+        ].copy()
+        if original_water_atoms
+        else np.empty((0,3),dtype=float)
+    )
+
+    water_mask=':' + ','.join(_STRUCTURAL_WATER_RESNAMES)
+
+    # Convert AmberParm to generic Structure before splitting.
+    # AmberParm.__copy__ in ParmEd 4.3.1 can fail because the
+    # copied object lacks the private _ncopies attribute.
+    fixed_nonwater=solute.copy(pmd.Structure)
+    fixed_nonwater.strip(water_mask)
+
+    retained_waters=solute.copy(pmd.Structure)
+    retained_waters.strip('!' + water_mask)
+
+    retained_water_residues=len(retained_waters.residues)
+    retained_water_atoms=len(retained_waters.atoms)
+
+    if retained_water_residues != len(original_water_residues):
+        raise RuntimeError(
+            'Structural-water split changed the retained-water residue count: '
+            f'input={len(original_water_residues)}, retained={retained_water_residues}'
+        )
+    if retained_water_atoms != len(original_water_atoms):
+        raise RuntimeError(
+            'Structural-water split changed the retained-water atom count: '
+            f'input={len(original_water_atoms)}, retained={retained_water_atoms}'
+        )
+
+    if original_water_atoms:
+        retained_coordinates=np.asarray(
+            retained_waters.coordinates,dtype=float
+        )
+        if not np.allclose(
+            retained_coordinates,
+            original_water_coordinates,
+            rtol=0.0,
+            atol=1.0e-8,
+        ):
+            raise RuntimeError(
+                'Structural-water coordinates changed while splitting the input solute'
+            )
+
+    audit={
+        'ordering_mode':'fixed_nonwater_then_retained_structural_water_then_environment',
+        'fixed_nonwater_atoms':len(fixed_nonwater.atoms),
+        'fixed_nonwater_residues':len(fixed_nonwater.residues),
+        'retained_structural_water_atoms':retained_water_atoms,
+        'retained_structural_water_residues':retained_water_residues,
+        'retained_structural_waters_strippable':False,
+        'generated_bulk_waters_strippable':True,
+        'input_atom_count':len(solute.atoms),
+        'split_atom_count':len(fixed_nonwater.atoms)+retained_water_atoms,
+    }
+    if audit['split_atom_count'] != audit['input_atom_count']:
+        raise RuntimeError(
+            'Fixed-solute split did not preserve the input atom count: '
+            f"input={audit['input_atom_count']}, split={audit['split_atom_count']}"
+        )
+
+    return fixed_nonwater,retained_waters,audit
+
+
+def _combine_protected_solute_and_environment(solute,environment,out):
+    """Combine canonical blocks and prove topology/coordinate block agreement."""
+    fixed_nonwater,retained_waters,audit=(
+        _split_fixed_solute_water_blocks(solute)
+    )
+    combined=fixed_nonwater+retained_waters+environment
+
+    n_fixed=len(fixed_nonwater.atoms)
+    n_retained=len(retained_waters.atoms)
+    n_environment=len(environment.atoms)
+
+    # Structure addition must retain the exact block order. If ParmEd changes
+    # it, fail here rather than write a topology/restart mismatch.
+    def atom_signature(atom):
+        return (
+            atom.residue.name.strip(), atom.name.strip(), str(atom.type),
+            round(float(atom.charge),8), round(float(atom.mass),8),
+        )
+
+    expected=(
+        [atom_signature(atom) for atom in fixed_nonwater.atoms]
+        + [atom_signature(atom) for atom in retained_waters.atoms]
+        + [atom_signature(atom) for atom in environment.atoms]
+    )
+    observed=[atom_signature(atom) for atom in combined.atoms]
+    if observed != expected:
+        for index,(wanted,found) in enumerate(zip(expected,observed),start=1):
+            if wanted != found:
+                raise RuntimeError(
+                    'ParmEd changed canonical component atom ordering at final '
+                    f'atom {index}: expected {wanted}, observed {found}'
+                )
+        raise RuntimeError('ParmEd changed canonical component atom ordering')
+
+    def coordinate_block(structure):
+        if len(structure.atoms) == 0:
+            return np.empty((0, 3), dtype=float)
+
+        coordinates = np.asarray(
+            structure.coordinates,
+            dtype=float,
+        )
+
+        if coordinates.shape != (
+            len(structure.atoms),
+            3,
+        ):
+            raise RuntimeError(
+                "Unexpected coordinate-array shape for "
+                f"{len(structure.atoms)} atoms: "
+                f"{coordinates.shape}"
+            )
+
+        return coordinates
+
+    expected_coordinates=np.vstack([
+        coordinate_block(fixed_nonwater),
+        coordinate_block(retained_waters),
+        coordinate_block(environment),
+    ])
+    if not np.allclose(
+        np.asarray(combined.coordinates,float),
+        np.asarray(expected_coordinates,float),
+        rtol=0.0,
+        atol=1.0e-8,
+    ):
+        delta=np.linalg.norm(
+            np.asarray(combined.coordinates,float)
+            - np.asarray(expected_coordinates,float),
+            axis=1,
+        )
+        raise RuntimeError(
+            'ParmEd changed canonical component coordinate ordering; '
+            f'maximum displacement={float(delta.max()):.8f} A'
+        )
+
+    audit['blocks']={
+        'fixed_nonwater':{
+            'first_atom_1based':1,
+            'last_atom_1based':n_fixed,
+            'atom_count':n_fixed,
+            'strippable':False,
+        },
+        'retained_structural_water':{
+            'first_atom_1based':n_fixed+1 if n_retained else None,
+            'last_atom_1based':n_fixed+n_retained if n_retained else None,
+            'atom_count':n_retained,
+            'residue_count':len(retained_waters.residues),
+            'strippable':False,
+        },
+        'generated_environment':{
+            'first_atom_1based':n_fixed+n_retained+1 if n_environment else None,
+            'last_atom_1based':n_fixed+n_retained+n_environment if n_environment else None,
+            'atom_count':n_environment,
+            'strippable_by_subblock_metadata':True,
+        },
+    }
+    audit['topology_coordinate_order_identical']=True
+
+    out=Path(out)
+    out.mkdir(parents=True,exist_ok=True)
+    (out/'structural_water_blocks.json').write_text(
+        json.dumps(audit,indent=2)+'\n'
+    )
+    return combined,audit
+
+
 # V0.13.5 ORDER-INDEPENDENT SOLUTE AUDIT
 # V0.13.4 LIPID21 MODULE ORDER
 # V0.13.3 LIPID21 COMPLETE-LIPID TER SEPARATION
@@ -702,6 +1139,408 @@ def _distance_to_fixed_xy(anchor,membrane_fixed):
     return min(float(np.linalg.norm(anchor[:2]-atom['xyz'][:2])) for atom in membrane_fixed)
 
 
+
+# V0.1.4 UNIFIED POPS POPE HEADGROUP REPLACEMENT
+
+def _convert_popc_headgroup_item(item,donors,rng,headgroup,species):
+    """Replace only the POPC PC module with a PS or PE donor module."""
+    molecule=item['molecule']; xyz=item['xyz']; host_atoms=molecule['atoms']
+    host_pc=[(i,a) for i,a in enumerate(host_atoms) if a['resname']=='PC']
+    host_map={a['name']:(i,a) for i,a in host_pc}
+    donor=donors[int(rng.integers(len(donors)))]
+    donor_head=[a for a in donor['atoms'] if a['resname']==headgroup]
+    donor_map={a['name']:a for a in donor_head}
+    alignment=['P31','O31','O32','C3','C2','C1','O21','C21','O11','C11']
+    common=[name for name in alignment if name in host_map and name in donor_map]
+    if len(common)<4: return None
+    mobile=np.array([donor_map[name]['xyz'] for name in common])
+    reference=np.array([xyz[host_map[name][0]] for name in common])
+    rotation,translation=_kabsch(mobile,reference)
+    retained_by_module={
+        'PA': {'atoms': [], 'xyz': []},
+        'OL': {'atoms': [], 'xyz': []},
+    }
+
+    for i,atom in enumerate(host_atoms):
+        module=atom['resname']
+
+        if module in retained_by_module:
+            retained_by_module[module]['atoms'].append(
+                dict(atom)
+            )
+            retained_by_module[module]['xyz'].append(
+                xyz[i]
+            )
+
+    transformed_atoms=[]
+    transformed_xyz=[]
+
+    for atom in donor_head:
+        copied=dict(atom)
+        copied['resname']=headgroup
+
+        transformed_atoms.append(copied)
+        transformed_xyz.append(
+            atom['xyz']@rotation.T+translation
+        )
+
+    # Required Lipid21 modular order:
+    # PA + headgroup (PE or PS) + OL
+    atoms=(
+        retained_by_module['PA']['atoms']
+        + transformed_atoms
+        + retained_by_module['OL']['atoms']
+    )
+
+    coordinates=np.array(
+        retained_by_module['PA']['xyz']
+        + transformed_xyz
+        + retained_by_module['OL']['xyz'],
+        float,
+    )
+    anchors=[i for i,a in enumerate(atoms) if a['resname']==headgroup and a['name']=='P31']
+    if len(anchors)!=1: return None
+    result={'molecule':{'atoms':atoms,'anchor':coordinates[anchors[0]],'leaflet':item['leaflet']},
+            'xyz':coordinates,'anchor':coordinates[anchors[0]],
+            'elements':[a['element'] for a in atoms], 'leaflet':item['leaflet'],'species':species}
+    if 'canonical_site_id' in item: result['canonical_site_id']=item['canonical_site_id']
+    return result
+
+
+
+def _modular_lipid_junction_distances(item,headgroup):
+    """Measure bonded junctions and known cross-module clearances.
+
+    Lipid21 POPS and POPE are represented as PA-headgroup-OL modules.
+    The two bonded module junctions must remain near their reference
+    geometry. POPE additionally requires a nonbonded PA:C12--PE:O12
+    clearance check because that oxygen can fold back onto the retained
+    PA module after least-squares headgroup alignment.
+    """
+    required=[
+        ('PA','C12'),
+        (headgroup,'C11'),
+        (headgroup,'C21'),
+        ('OL','C12'),
+    ]
+
+    if headgroup in {'PE','PS'}:
+        required.append((headgroup,'O12'))
+
+    coordinates={}
+
+    for atom,point in zip(
+        item['molecule']['atoms'],
+        item['xyz'],
+    ):
+        key=(
+            str(atom['resname']).strip(),
+            str(atom['name']).strip(),
+        )
+        if key in required:
+            coordinates.setdefault(key,[]).append(
+                np.asarray(point,float)
+            )
+
+    if any(
+        len(coordinates.get(key,[]))!=1
+        for key in required
+    ):
+        return None
+
+    distances={
+        'PA_C12_to_headgroup_C11':float(
+            np.linalg.norm(
+                coordinates[('PA','C12')][0]
+                - coordinates[(headgroup,'C11')][0]
+            )
+        ),
+        'headgroup_C21_to_OL_C12':float(
+            np.linalg.norm(
+                coordinates[(headgroup,'C21')][0]
+                - coordinates[('OL','C12')][0]
+            )
+        ),
+    }
+
+    if headgroup in {'PE','PS'}:
+        distances[
+            f'PA_C12_to_{headgroup}_O12'
+        ]=float(
+            np.linalg.norm(
+                coordinates[('PA','C12')][0]
+                - coordinates[(headgroup,'O12')][0]
+            )
+        )
+
+    return distances
+
+
+def _modular_lipid_junctions_valid(item,headgroup,cfg):
+    """Reject malformed modular-lipid bonds and internal clashes."""
+    distances=_modular_lipid_junction_distances(
+        item,
+        headgroup,
+    )
+    if distances is None:
+        return False,{}
+
+    settings=cfg.get('complex_membrane',{})
+
+    junction_minimum=float(settings.get(
+        'modular_lipid_junction_minimum_angstrom',
+        1.25,
+    ))
+    junction_maximum=float(settings.get(
+        'modular_lipid_junction_maximum_angstrom',
+        1.75,
+    ))
+
+    junction_keys=(
+        'PA_C12_to_headgroup_C11',
+        'headgroup_C21_to_OL_C12',
+    )
+
+    junctions_valid=all(
+        junction_minimum<=distances[key]<=junction_maximum
+        for key in junction_keys
+    )
+
+    # Packaged POPE references span about 2.27--2.55 A for this
+    # nonbonded cross-module distance. A 1.75 A hard floor leaves
+    # approximately 0.5 A tolerance below the smallest reference
+    # geometry while excluding the observed 0.50--0.92 A contacts.
+    internal_clearance_valid=True
+
+    if headgroup in {'PE','PS'}:
+        species_key=(
+            'pope'
+            if headgroup=='PE'
+            else 'pops'
+        )
+        distance_key=(
+            f'PA_C12_to_{headgroup}_O12'
+        )
+        internal_heavy_minimum=float(settings.get(
+            f'{species_key}_PA_C12_{headgroup}_O12_minimum_angstrom',
+            1.75,
+        ))
+        internal_clearance_valid=(
+            distances[distance_key]
+            >= internal_heavy_minimum
+        )
+
+    return (
+        junctions_valid and internal_clearance_valid,
+        distances,
+    )
+
+
+def _place_exact_headgroup_target(
+    items,eligible,target,donors,fixed_cells,cfg,rng,
+    leaf,headgroup,species
+):
+    """Place exact POPS/POPE targets with geometry and periodic checks."""
+    candidates=[
+        index
+        for index in eligible
+        if items[index]['species']=='POPC'
+    ]
+    rng.shuffle(candidates)
+
+    placed=[]
+    failures=[]
+
+    donor_pool=[
+        molecule
+        for molecule in donors
+        if molecule['leaflet']==leaf
+    ] or donors
+
+    key=species.lower()+'_donors_per_site'
+    donor_limit=min(
+        len(donor_pool),
+        int(
+            cfg.get('complex_membrane',{}).get(
+                key,
+                64,
+            )
+        ),
+    )
+
+    for index in candidates:
+        if len(placed)>=target:
+            break
+
+        order=list(
+            rng.permutation(len(donor_pool))
+        )[:donor_limit]
+
+        best=None
+        geometry_rejections=0
+        intermolecular_rejections=0
+
+        for donor_index in order:
+            attempt=_convert_popc_headgroup_item(
+                items[index],
+                [donor_pool[donor_index]],
+                rng,
+                headgroup,
+                species,
+            )
+
+            if attempt is None:
+                geometry_rejections+=1
+                continue
+
+            junction_valid,junction_distances=(
+                _modular_lipid_junctions_valid(
+                    attempt,
+                    headgroup,
+                    cfg,
+                )
+            )
+
+            if not junction_valid:
+                geometry_rejections+=1
+                continue
+
+            valid,packing_score,minima=(
+                _validate_replacement_item(
+                    attempt,
+                    index,
+                    items,
+                    fixed_cells,
+                    cfg,
+                )
+            )
+
+            if not valid:
+                intermolecular_rejections+=1
+                continue
+
+            junction_score=sum(
+                (
+                    junction_distances[junction_key]-1.52
+                )**2
+                for junction_key in (
+                    'PA_C12_to_headgroup_C11',
+                    'headgroup_C21_to_OL_C12',
+                )
+            )
+
+            internal_clearance_penalty=0.0
+
+            if headgroup in {'PE','PS'}:
+                species_key=(
+                    'pope'
+                    if headgroup=='PE'
+                    else 'pops'
+                )
+                distance_key=(
+                    f'PA_C12_to_{headgroup}_O12'
+                )
+                clearance=(
+                    junction_distances[
+                        distance_key
+                    ]
+                )
+
+                # Prefer reference-like cross-module clearance
+                # after the candidate passes the hard floor.
+                preferred_clearance=float(
+                    cfg.get(
+                        'complex_membrane',
+                        {},
+                    ).get(
+                        f'{species_key}_PA_C12_{headgroup}_O12_preferred_angstrom',
+                        2.30,
+                    )
+                )
+
+                internal_clearance_penalty=max(
+                    0.0,
+                    preferred_clearance-clearance,
+                )**2
+
+            combined_score=(
+                float(packing_score)
+                + 100.0*float(junction_score)
+                + 100.0*float(
+                    internal_clearance_penalty
+                )
+            )
+
+            if best is None or combined_score < best[0]:
+                best=(
+                    combined_score,
+                    attempt,
+                    minima,
+                    junction_distances,
+                )
+
+        if best is None:
+            failures.append({
+                'site_index':index,
+                'reason':f'no_valid_{species.lower()}_conversion',
+                'geometry_rejections':geometry_rejections,
+                'intermolecular_rejections':intermolecular_rejections,
+            })
+            continue
+
+        score,attempt,minima,junction_distances=best
+        attempt['canonical_site_id']=items[index].get(
+            'canonical_site_id',
+            (index,),
+        )
+        items[index]=attempt
+
+        placed.append({
+            'site_index':index,
+            'score':float(score),
+            'minimum_distances':minima,
+            'junction_distances_angstrom':junction_distances,
+        })
+
+    if len(placed)!=target:
+        raise RuntimeError(
+            f'Exact composition failed: requested {target} {species} '
+            f'in {leaf}, placed {len(placed)} after testing '
+            f'{len(candidates)} POPC sites.'
+        )
+
+    return placed,failures
+
+
+def _allocate_leaflet_counts(total,fractions,order=('POPC','POPE','POPS','CHL')):
+    """Largest-remainder integer allocation with a deterministic tie break."""
+    clean={name:float(fractions.get(name,0.0)) for name in order}
+    if any(v<0 for v in clean.values()): raise ValueError(f'Negative leaflet fraction: {clean}')
+    s=sum(clean.values())
+    if abs(s-1.0)>1e-8: raise ValueError(f'Leaflet fractions must sum to 1.0, got {s}: {clean}')
+    raw={name:total*clean[name] for name in order}; counts={name:int(np.floor(raw[name])) for name in order}
+    remaining=total-sum(counts.values())
+    ranked=sorted(
+        order,
+        key=lambda name:(
+            -round(raw[name] - counts[name], 12),
+            order.index(name),
+        ),
+    )
+    for name in ranked[:remaining]: counts[name]+=1
+    return counts
+
+
+def _composition_fraction(settings,cfg,leaf,species,default=0.0):
+    modern=cfg.get('membrane',{}).get('composition',{}).get(leaf,{})
+    if species in modern: return float(modern[species])
+    old=settings.get('leaflets',{}).get(leaf,{})
+    return float(old.get(species+'_fraction',settings.get(species+'_fraction',default)))
+
+
+def _packaged_lipid_reference(species):
+    return Path(__file__).resolve().parent/'data'/'reference_library'/species/'reference.pdb'
+
 def _convert_popc_to_pops_item(item,donors,rng):
     molecule=item['molecule']; xyz=item['xyz']; anchor=item['anchor']
     host_atoms=molecule['atoms']
@@ -762,22 +1601,78 @@ def _place_chl_item(host,donors,fixed_cells,lipid_items,cfg,rng):
 # V0.12.3 CONTIGUOUS OPC TILING
 # V0.12.4 TLEAP-CONTIGUOUS OPC VOLUME
 def _validate_replacement_item(candidate,host_index,items,fixed_cells,cfg):
-    """Validate a replacement against every other molecule with periodic MIC."""
-    environment=[item for index,item in enumerate(items) if index!=host_index]
+    """Validate a replacement against every other molecule with periodic MIC.
+
+    Mixed-lipid builds are periodic. Refuse a silent nonperiodic fallback,
+    because it can accept candidates that overlap across an X/Y boundary in
+    the exact final Amber system.
+    """
+    environment=[
+        item
+        for index,item in enumerate(items)
+        if index!=host_index
+    ]
     box=cfg.get('_periodic_box_angstrom')
-    if box is not None:
-        return _periodic_candidate_valid(candidate['xyz'],candidate['elements'],environment,box,cfg)
-    lipid_cells=_build_atom_cells(environment,4.0)
-    return _candidate_valid(
-        candidate['xyz'],candidate['elements'],fixed_cells,lipid_cells,4.0,
-        float(cfg.get('packing',{}).get('fixed_heavy_lipid_heavy_angstrom',2.0)),
-        float(cfg.get('packing',{}).get('fixed_heavy_lipid_hydrogen_angstrom',1.2)),
-        1.5,1.05,float(cfg.get('packing',{}).get('lipid_hydrogen_hydrogen_angstrom',1.15)))
+    if box is None:
+        raise RuntimeError(
+            'Periodic box must be initialized before mixed-lipid replacement'
+        )
+    return _periodic_candidate_valid(
+        candidate['xyz'],
+        candidate['elements'],
+        environment,
+        box,
+        cfg,
+    )
 
 
-def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg,rng,leaf):
+# V0.1.5 GLOBAL EXACT CHOLESTEROL PLACEMENT
+
+def _cholesterol_periodic_box_xy(cfg):
+    """Resolve the commensurate membrane XY dimensions for site ordering."""
+    requested=(cfg.get('membrane_only',{}).get('box_xy_angstrom')
+               or cfg.get('membrane',{}).get('box_xy_angstrom'))
+    if not requested: return None
+    reference=_packaged_lipid_reference('POPC')
+    line=next((line for line in Path(reference).read_text(errors='replace').splitlines()
+               if line.startswith('CRYST1')),None)
+    if line is None: return np.asarray(requested[:2],float)
+    reference_xy=np.array([float(line[6:15]),float(line[15:24])],float)
+    repeats=np.maximum(1,np.rint(np.asarray(requested[:2],float)/reference_xy).astype(int))
+    return reference_xy*repeats
+
+
+def _cholesterol_spread_candidate_order(candidates,items,cfg,rng):
+    """Seeded periodic farthest-point order for dense CHL replacement.
+
+    The order is spatially distributed, so early accepted cholesterol sites do
+    not cluster and block the remaining exact target. All eligible sites remain
+    in the returned order, preserving exact-composition semantics.
+    """
+    candidates=list(candidates)
+    if len(candidates)<2: return candidates
+    points=np.array([items[index]['anchor'][:2] for index in candidates],float)
+    box=_cholesterol_periodic_box_xy(cfg)
+    chosen=[int(rng.integers(len(candidates)))]
+    remaining=set(range(len(candidates))); remaining.remove(chosen[0])
+    min_distance=np.full(len(candidates),np.inf,float)
+    while remaining:
+        last=chosen[-1]
+        delta=points-points[last]
+        if box is not None:
+            delta-=box*np.rint(delta/box)
+        distance2=np.einsum('ij,ij->i',delta,delta)
+        min_distance=np.minimum(min_distance,distance2)
+        maximum=max(min_distance[index] for index in remaining)
+        tied=[index for index in remaining if abs(min_distance[index]-maximum)<=1e-10]
+        next_index=tied[int(rng.integers(len(tied)))]
+        chosen.append(next_index); remaining.remove(next_index)
+    return [candidates[index] for index in chosen]
+
+
+def _place_exact_cholesterol_target_single_attempt(items,eligible,target,donors,fixed_cells,cfg,rng,leaf):
     """Try seed-ordered POPC hosts until the exact CHL target is committed."""
-    candidates=list(eligible); rng.shuffle(candidates)
+    candidates=list(eligible); candidates=_cholesterol_spread_candidate_order(candidates,items,cfg,rng)
     placed=[]; failures=[]
     for index in candidates:
         if len(placed)>=target: break
@@ -802,6 +1697,31 @@ def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg
         )
     return placed,failures
 
+
+
+def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg,rng,leaf):
+    """Place an exact CHL target with distributed sites and pristine retries."""
+    if target<=0: return [],[]
+    settings=cfg.get('complex_membrane',{})
+    attempts=max(1,int(settings.get('cholesterol_global_attempts',12)))
+    original=copy.deepcopy(items)
+    errors=[]
+    for attempt_number in range(1,attempts+1):
+        items[:]=copy.deepcopy(original)
+        attempt_seed=int(rng.integers(0,np.iinfo(np.uint32).max,dtype=np.uint32))
+        attempt_rng=np.random.default_rng(attempt_seed)
+        try:
+            placed,failures=_place_exact_cholesterol_target_single_attempt(
+                items,eligible,target,donors,fixed_cells,cfg,attempt_rng,leaf)
+            return placed,failures
+        except RuntimeError as error:
+            errors.append({'attempt':attempt_number,'seed':attempt_seed,'error':str(error)})
+    items[:]=original
+    summary=' | '.join(f"attempt {item['attempt']}: {item['error']}" for item in errors[-3:])
+    raise RuntimeError(
+        f'Exact cholesterol composition failed after {attempts} distributed attempts '
+        f'for {leaf} leaflet (target {target}). Recent failures: {summary}'
+    )
 
 def _place_exact_pops_target(items,eligible,target,donors,fixed_cells,cfg,rng,leaf):
     """Convert POPC to POPS after CHL, continuing until exact target is reached."""
@@ -837,64 +1757,66 @@ def _place_exact_pops_target(items,eligible,target,donors,fixed_cells,cfg,rng,le
 
 
 def _apply_complex_composition(items,fixed,lower,upper,cfg,rng):
-    """Apply exact per-leaflet CHL, custom sterol, and optional POPS composition."""
+    """Apply exact CHL/custom/POPS/POPE composition with shared headgroup logic."""
     settings=cfg.get('complex_membrane',{})
-    if not settings.get('enabled',False): return items,{}
+    modern=cfg.get('membrane',{}).get('composition',{})
+    if not settings.get('enabled',False) and not modern: return items,{}
     membrane_fixed=[atom for atom in fixed if lower-8<=atom['xyz'][2]<=upper+8]
     shell=float(settings.get('protein_exclusion_shell_angstrom',8.0))
-    chl_ref=_parse_chl_reference(settings['CHL_reference'])
-    custom_settings=_custom_sterol_settings(cfg)
-    custom_template=_custom_sterol_template(custom_settings) if custom_settings else None
-    pops_enabled=any(float(settings.get('leaflets',{}).get(leaf,{}).get(
-        'POPS_fraction',settings.get('POPS_fraction',0.0)))>0 for leaf in ('upper','lower'))
-    pops_ref=(_parse_modular_lipid_reference(settings['POPS_reference'],'PS','POPS')
-              if pops_enabled else [])
+    chl_needed=any(_composition_fraction(settings,cfg,leaf,'CHL',0.0)>0 for leaf in ('upper','lower'))
+    chl_ref=_parse_chl_reference(settings.get('CHL_reference',_packaged_lipid_reference('CHL').with_name('conformers.pdb'))) if chl_needed else []
+    custom_settings=_custom_sterol_settings(cfg); custom_template=_custom_sterol_template(custom_settings) if custom_settings else None
+    pops_needed=any(_composition_fraction(settings,cfg,leaf,'POPS',0.0)>0 for leaf in ('upper','lower'))
+    pope_needed=any(_composition_fraction(settings,cfg,leaf,'POPE',0.0)>0 for leaf in ('upper','lower'))
+    pops_ref=_parse_modular_lipid_reference(settings.get('POPS_reference',_packaged_lipid_reference('POPS')),'PS','POPS') if pops_needed else []
+    pope_ref=_parse_modular_lipid_reference(settings.get('POPE_reference',_packaged_lipid_reference('POPE')),'PE','POPE') if pope_needed else []
     fixed_cells=build_fixed_cells(fixed,4.0)
-    report={'order':['CHL','CUSTOM_STEROL','POPS'],'protected_shell_angstrom':shell,
-            'custom_sterol':None if custom_template is None else {
-                'species':custom_template['species'],'residue_name':custom_template['residue_name'],
-                'anchor_atom':custom_template['anchor_name'],
-                'axis_end_atoms':custom_template['axis_end_names'],
-                'axis_length_angstrom':float(np.linalg.norm(custom_template['axis'])),
-                'reflection_allowed':False},'leaflets':{}}
-
+    report={'order':['CHL','CUSTOM_STEROL','POPS','POPE'],'protected_shell_angstrom':shell,'leaflets':{}}
     for leaf in ('upper','lower'):
-        leaflet_indices=[index for index,item in enumerate(items) if item['leaflet']==leaf]
-        total=len(leaflet_indices); leaflet_settings=settings.get('leaflets',{}).get(leaf,{})
-        chl_fraction=float(leaflet_settings.get('CHL_fraction',settings.get('CHL_fraction',0.05)))
-        pops_fraction=float(leaflet_settings.get('POPS_fraction',settings.get('POPS_fraction',0.0)))
+        idx=[i for i,item in enumerate(items) if item['leaflet']==leaf]; total=len(idx)
+        fractions={name:_composition_fraction(settings,cfg,leaf,name,1.0 if name=='POPC' else 0.0) for name in ('POPC','POPE','POPS','CHL')}
         custom_fraction=0.0
         if custom_settings:
-            custom_fraction=float(custom_settings.get('leaflets',{}).get(leaf,{}).get(
-                'fraction',custom_settings.get('fraction',0.05)))
-        if min(chl_fraction,pops_fraction,custom_fraction)<0 or chl_fraction+pops_fraction+custom_fraction>1.0:
-            raise ValueError(f'Invalid {leaf} fractions: CHL={chl_fraction}, custom={custom_fraction}, POPS={pops_fraction}')
-        target_chl=int(round(total*chl_fraction)); target_custom=int(round(total*custom_fraction))
-        target_pops=int(round(total*pops_fraction)); target_popc=total-target_chl-target_custom-target_pops
-        eligible=[index for index in leaflet_indices if items[index]['species']=='POPC' and
-                  _distance_to_fixed_xy(items[index]['anchor'],membrane_fixed)>=shell]
-        if len(eligible)<target_chl+target_custom+target_pops:
-            raise RuntimeError(f'Exact composition impossible in {leaf}: {len(eligible)} eligible sites')
-        chl_placed,chl_failures=(_place_exact_cholesterol_target(
-            items,eligible,target_chl,chl_ref,fixed_cells,cfg,rng,leaf) if target_chl else ([],[]))
-        custom_placed,custom_failures=(_place_exact_custom_sterol_target(
-            items,eligible,target_custom,custom_template,fixed_cells,cfg,rng,leaf,custom_settings)
-            if target_custom else ([],[]))
-        pops_placed,pops_failures=(_place_exact_pops_target(
-            items,eligible,target_pops,pops_ref,fixed_cells,cfg,rng,leaf) if target_pops else ([],[]))
-        species_names=['POPC','POPS','CHL']+([custom_template['species']] if custom_template else [])
-        actual={species:sum(items[index]['species']==species for index in leaflet_indices)
-                for species in species_names}
-        expected={'POPC':target_popc,'POPS':target_pops,'CHL':target_chl}
-        if custom_template: expected[custom_template['species']]=target_custom
+            custom_fraction=float(custom_settings.get('leaflets',{}).get(leaf,{}).get('fraction',custom_settings.get('fraction',0.0)))
+        # Legacy configurations omit POPC; infer it after fixed species are read.
+        modern_leaf=modern.get(leaf,{})
+        old_leaf=settings.get('leaflets',{}).get(leaf,{})
+        if 'POPC' not in modern_leaf and 'POPC_fraction' not in old_leaf:
+            fractions['POPC']=1.0-fractions['POPE']-fractions['POPS']-fractions['CHL']-custom_fraction
+        alloc_fractions=dict(fractions)
+        if custom_fraction:
+            alloc_fractions['CUSTOM_STEROL']=custom_fraction
+            order=('POPC','POPE','POPS','CHL','CUSTOM_STEROL')
+        else: order=('POPC','POPE','POPS','CHL')
+        counts=_allocate_leaflet_counts(total,alloc_fractions,order)
+        # The protein-aware host builder has already decided which POPC sites
+        # can exist at the protein interface. Mixed-lipid composition is a
+        # one-for-one replacement of those accepted host sites and must not
+        # carve or expand the protein exclusion region.
+        #
+        # Allow every accepted POPC host site to be tested as a donor. The
+        # periodic atom-level replacement validator still rejects any CHL,
+        # POPS, or POPE candidate that clashes with the fixed protein,
+        # retained structural waters, or another membrane molecule.
+        eligible=[
+            i
+            for i in idx
+            if items[i]['species']=='POPC'
+        ]
+        replacements=counts.get('CHL',0)+counts.get('CUSTOM_STEROL',0)+counts.get('POPS',0)+counts.get('POPE',0)
+        if len(eligible)<replacements: raise RuntimeError(f'Exact composition impossible in {leaf}: {len(eligible)} eligible sites for {replacements} replacements')
+        chl,chl_bad=(_place_exact_cholesterol_target(items,eligible,counts['CHL'],chl_ref,fixed_cells,cfg,rng,leaf) if counts['CHL'] else ([],[]))
+        custom,custom_bad=(_place_exact_custom_sterol_target(items,eligible,counts['CUSTOM_STEROL'],custom_template,fixed_cells,cfg,rng,leaf,custom_settings) if counts.get('CUSTOM_STEROL',0) else ([],[]))
+        pops,pops_bad=(_place_exact_headgroup_target(items,eligible,counts['POPS'],pops_ref,fixed_cells,cfg,rng,leaf,'PS','POPS') if counts['POPS'] else ([],[]))
+        pope,pope_bad=(_place_exact_headgroup_target(items,eligible,counts['POPE'],pope_ref,fixed_cells,cfg,rng,leaf,'PE','POPE') if counts['POPE'] else ([],[]))
+        species=['POPC','POPE','POPS','CHL']+([custom_template['species']] if custom_template else [])
+        actual={name:sum(items[i]['species']==name for i in idx) for name in species}
+        expected={name:counts.get(name,0) for name in ('POPC','POPE','POPS','CHL')}
+        if custom_template: expected[custom_template['species']]=counts.get('CUSTOM_STEROL',0)
         if actual!=expected: raise RuntimeError(f'Composition verification failed in {leaf}: expected {expected}, got {actual}')
-        report['leaflets'][leaf]={
-            'total':total,'requested_fractions':{'POPC':1.0-chl_fraction-custom_fraction-pops_fraction,
-            'CHL':chl_fraction,'custom_sterol':custom_fraction,'POPS':pops_fraction},
-            'target':expected,'actual':actual,'eligible_bulk_sites':len(eligible),
-            'cholesterol_placements':chl_placed,'cholesterol_failed_sites':chl_failures,
-            'custom_sterol_placements':custom_placed,'custom_sterol_failed_sites':custom_failures,
-            'pops_conversions':pops_placed,'pops_failed_sites':pops_failures}
+        report['leaflets'][leaf]={'total':total,'requested_fractions':alloc_fractions,'target':expected,'actual':actual,'eligible_host_sites':len(eligible),
+          'cholesterol_placements':chl,'cholesterol_failed_sites':chl_bad,'custom_sterol_placements':custom,'custom_sterol_failed_sites':custom_bad,
+          'pops_conversions':pops,'pops_failed_sites':pops_bad,'pope_conversions':pope,'pope_failed_sites':pope_bad}
     return items,report
 
 
@@ -1589,7 +2511,9 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
     solute_rst7=Path(top_cfg.get('solute_coordinates','pre_membrane.rst7')).expanduser().resolve()
     if not solute_prmtop.is_file() or not solute_rst7.is_file():
         raise FileNotFoundError(f'Missing authoritative solute topology/coordinates: {solute_prmtop}, {solute_rst7}')
-    solute=pmd.load_file(str(solute_prmtop),xyz=str(solute_rst7))
+    solute,structural_water_cleanup,prepared_solute_top,prepared_solute_rst=(
+        _prepare_authoritative_solute_pair(solute_prmtop,solute_rst7,cfg,out)
+    )
     mapping_report=_topology_pdb_mapping_report(solute,fixed)
     # The topology/restart pair is authoritative. Do not reject template-added
     # hydrogens, OPC EPW sites, tleap atom ordering, or residue aliases.
@@ -1635,17 +2559,198 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
         final_items,out/'environment_with_ions',final_env_top,final_env_rst,
         out/'tleap_environment_final.log',box,cfg)
     final_environment=pmd.load_file(str(final_env_top),xyz=str(final_env_rst))
-    combined=solute+final_environment
+    # Reload the authoritative input pair immediately before final assembly.
+    # The long-lived working solute can acquire stale ParmEd molecule/cache
+    # state during packing and topology preparation. Never use it for writing
+    # the final topology/restart pair.
+    fresh_solute=pmd.load_file(
+        str(prepared_solute_top),xyz=str(prepared_solute_rst)
+    )
+    final_structural_water_cleanup=structural_water_cleanup
+    combined,structural_water_audit=(
+        _combine_protected_solute_and_environment(
+            fresh_solute,final_environment,out
+        )
+    )
     combined.box=np.array([box[0],box[1],box[2],90.0,90.0,90.0])
-    solute_preservation_audit=_verify_solute_prefix(solute,combined)
+    solute_preservation_audit=_verify_solute_prefix(fresh_solute,combined)
     final_charge=_rounded_integer_charge(sum(float(a.charge) for a in combined.atoms),tolerance)
     if ion_cfg.get('enabled',False) and final_charge!=0:
         raise RuntimeError(f'Final topology charge is {final_charge} e, not zero')
     topology_name=top_cfg.get('output_prmtop','topology.prmtop')
     coordinate_name=top_cfg.get('output_rst7','coordinates.rst7')
-    combined.save(str(out/topology_name),overwrite=True)
-    combined.save(str(out/coordinate_name),format='rst7',overwrite=True)
+    expected_final_atoms=len(combined.atoms)
+
+    # ParmEd's direct periodic Structure writer can attempt an implicit
+    # molecule reorder and corrupt the topology atom count. First write a
+    # stable nonperiodic pair from independent generic Structure copies.
+    temporary_topology=out/'final_unboxed_intermediate.prmtop'
+    temporary_coordinates=out/'final_unboxed_intermediate.rst7'
+
+    for temporary_path in (temporary_topology,temporary_coordinates):
+        temporary_path.unlink(missing_ok=True)
+
+    unboxed_topology=combined.copy(pmd.Structure)
+    unboxed_coordinates=combined.copy(pmd.Structure)
+    unboxed_topology.box=None
+    unboxed_coordinates.box=None
+
+    with warnings.catch_warnings(record=True) as unboxed_warnings:
+        warnings.simplefilter('always')
+        unboxed_topology.save(
+            str(temporary_topology),
+            format='amber',
+            overwrite=True,
+        )
+
+    molecule_warnings=[
+        str(item.message)
+        for item in unboxed_warnings
+        if (
+            'not contiguous' in str(item.message).lower()
+            or 'reorder' in str(item.message).lower()
+        )
+    ]
+    if molecule_warnings:
+        raise RuntimeError(
+            'Ordered final structure triggered molecular reordering during '
+            'the nonperiodic topology write: '
+            + ' | '.join(molecule_warnings)
+        )
+
+    unboxed_coordinates.save(
+        str(temporary_coordinates),
+        format='rst7',
+        overwrite=True,
+    )
+
+    temporary_written_topology=pmd.load_file(str(temporary_topology))
+    temporary_restart_atoms=int(
+        temporary_coordinates.read_text().splitlines()[1].split()[0]
+    )
+    if (
+        len(temporary_written_topology.atoms)!=expected_final_atoms
+        or temporary_restart_atoms!=expected_final_atoms
+    ):
+        raise RuntimeError(
+            'Intermediate topology/restart atom-count mutation: '
+            f'in-memory={expected_final_atoms}, '
+            f'topology={len(temporary_written_topology.atoms)}, '
+            f'restart={temporary_restart_atoms}'
+        )
+
+    # Reload as AmberParm, explicitly construct Amber molecule metadata,
+    # assign the periodic box, and write the final exact pair from this same
+    # ordered object. Do not call AmberParm.copy(); ParmEd 4.3.1 can create
+    # an incomplete copy without parm_data["POINTERS"].
+    periodic=pmd.load_file(
+        str(temporary_topology),
+        xyz=str(temporary_coordinates),
+    )
+
+    from parmed.tools.actions import setMolecules
+
+    with warnings.catch_warnings(record=True) as molecule_metadata_warnings:
+        warnings.simplefilter('always')
+        setMolecules(periodic).execute()
+
+    metadata_reorder_warnings=[
+        str(item.message)
+        for item in molecule_metadata_warnings
+        if (
+            'not contiguous' in str(item.message).lower()
+            or 'reorder' in str(item.message).lower()
+        )
+    ]
+    if metadata_reorder_warnings:
+        raise RuntimeError(
+            'setMolecules attempted to reorder the normalized final system: '
+            + ' | '.join(metadata_reorder_warnings)
+        )
+
+    periodic.box=np.array(
+        [box[0],box[1],box[2],90.0,90.0,90.0],
+        dtype=float,
+    )
+
+    with warnings.catch_warnings(record=True) as periodic_warnings:
+        warnings.simplefilter('always')
+        periodic.save(
+            str(out/topology_name),
+            overwrite=True,
+        )
+
+    periodic_reorder_warnings=[
+        str(item.message)
+        for item in periodic_warnings
+        if (
+            'not contiguous' in str(item.message).lower()
+            or 'reorder' in str(item.message).lower()
+        )
+    ]
+    if periodic_reorder_warnings:
+        raise RuntimeError(
+            'Final periodic topology write attempted molecular reordering: '
+            + ' | '.join(periodic_reorder_warnings)
+        )
+
+    periodic.save(
+        str(out/coordinate_name),
+        format='rst7',
+        overwrite=True,
+    )
+
+    written_topology=pmd.load_file(str(out/topology_name))
+    restart_second_line=(out/coordinate_name).read_text().splitlines()[1]
+    written_restart_atoms=int(restart_second_line.split()[0])
+    if len(written_topology.atoms)!=expected_final_atoms or written_restart_atoms!=expected_final_atoms:
+        raise RuntimeError(
+            'Final topology/restart atom-count mutation during write: '
+            f'in-memory={expected_final_atoms}, topology={len(written_topology.atoms)}, '
+            f'restart={written_restart_atoms}'
+        )
+
+    exact_final_system=pmd.load_file(
+        str(out/topology_name),
+        xyz=str(out/coordinate_name),
+    )
+    if len(exact_final_system.atoms)!=expected_final_atoms:
+        raise RuntimeError(
+            'Exact final topology/restart reload changed the atom count: '
+            f'expected={expected_final_atoms}, '
+            f'reloaded={len(exact_final_system.atoms)}'
+        )
+
+    expected_box=np.array(
+        [box[0],box[1],box[2],90.0,90.0,90.0],
+        dtype=float,
+    )
+    if exact_final_system.box is None:
+        raise RuntimeError(
+            'Exact final topology/restart pair has no periodic box'
+        )
+    if not np.allclose(
+        np.asarray(exact_final_system.box,dtype=float),
+        expected_box,
+        rtol=0.0,
+        atol=1.0e-3,
+    ):
+        raise RuntimeError(
+            'Exact final topology/restart box differs from the builder box: '
+            f'expected={expected_box.tolist()}, '
+            f'found={np.asarray(exact_final_system.box,dtype=float).tolist()}'
+        )
+
     validation_cfg=cfg.get('final_validation',{})
+    if (
+        structural_water_cleanup.get('hard_clashing_structural_waters',0)>0
+        and structural_water_cleanup.get('policy')=='keep'
+    ):
+        raise RuntimeError(
+            'Structural waters with hard clashes were kept for diagnosis; '
+            'SIMULATION_READY is not permitted'
+        )
+
     final_validation_report=validate_final_system(
         out/topology_name,out/coordinate_name,
         unrelated_cutoff_angstrom=float(validation_cfg.get('unrelated_atom_cutoff_angstrom',0.5)),
@@ -1654,7 +2759,9 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
         energy_threshold_kj_mol=float(validation_cfg.get('energy_threshold_kj_mol',1.0e12)),
         cpptraj_cutoff_angstrom=float(validation_cfg.get('cpptraj_cutoff_angstrom',10.0)),
         report_limit=int(validation_cfg.get('report_limit',100)),
-        report_path=out/'final_validation.json')
+        report_path=out/'final_validation.json',
+        authoritative_solute_prmtop=prepared_solute_top,
+        authoritative_solute_rst7=prepared_solute_rst)
     retained_input_waters=sum(
         residue.name.strip() in {'WAT','HOH','OPC'} for residue in solute.residues)
     result={'solute_prmtop':str(solute_prmtop),'solute_coordinates':str(solute_rst7),
@@ -1973,7 +3080,18 @@ def build(config_path):
         assembled.append({'molecule':accepted['molecule'],'xyz':accepted['xyz'],'anchor':np.asarray(accepted['final_anchor']),
                           'elements':[a['element'] for a in accepted['molecule']['atoms']],
                           'leaflet':accepted['leaflet'],'species':'POPC'})
-    assembled,complex_report=_apply_complex_composition(assembled,fixed,lower,upper,cfg,rng)
+    # Mixed-lipid replacement must use the same periodic minimum-image
+    # validation as the membrane-only pathway. The box is already the final
+    # commensurate protein-membrane host box at this stage; this assignment
+    # does not change the box or the protein exclusion geometry.
+    cfg['_periodic_box_angstrom'] = [
+        float(box[0]),
+        float(box[1]),
+        float(box[2]),
+    ]
+    assembled,complex_report=_apply_complex_composition(
+        assembled,fixed,lower,upper,cfg,rng
+    )
     assembled,canonical_order_report=_canonicalize_environment_item_order(assembled)
     assembled,box,solvent_report=_apply_opc_solvation(assembled,fixed,box,cfg)
     out=Path(cfg['output']['directory']); out.mkdir(exist_ok=True)
