@@ -1207,29 +1207,308 @@ def _convert_popc_headgroup_item(item,donors,rng,headgroup,species):
     return result
 
 
-def _place_exact_headgroup_target(items,eligible,target,donors,fixed_cells,cfg,rng,leaf,headgroup,species):
-    """Unified exact POPC-to-POPS/POPE replacement with final periodic checks."""
-    candidates=[index for index in eligible if items[index]['species']=='POPC']
-    rng.shuffle(candidates); placed=[]; failures=[]
-    donor_pool=[m for m in donors if m['leaflet']==leaf] or donors
+
+def _modular_lipid_junction_distances(item,headgroup):
+    """Measure bonded junctions and known cross-module clearances.
+
+    Lipid21 POPS and POPE are represented as PA-headgroup-OL modules.
+    The two bonded module junctions must remain near their reference
+    geometry. POPE additionally requires a nonbonded PA:C12--PE:O12
+    clearance check because that oxygen can fold back onto the retained
+    PA module after least-squares headgroup alignment.
+    """
+    required=[
+        ('PA','C12'),
+        (headgroup,'C11'),
+        (headgroup,'C21'),
+        ('OL','C12'),
+    ]
+
+    if headgroup in {'PE','PS'}:
+        required.append((headgroup,'O12'))
+
+    coordinates={}
+
+    for atom,point in zip(
+        item['molecule']['atoms'],
+        item['xyz'],
+    ):
+        key=(
+            str(atom['resname']).strip(),
+            str(atom['name']).strip(),
+        )
+        if key in required:
+            coordinates.setdefault(key,[]).append(
+                np.asarray(point,float)
+            )
+
+    if any(
+        len(coordinates.get(key,[]))!=1
+        for key in required
+    ):
+        return None
+
+    distances={
+        'PA_C12_to_headgroup_C11':float(
+            np.linalg.norm(
+                coordinates[('PA','C12')][0]
+                - coordinates[(headgroup,'C11')][0]
+            )
+        ),
+        'headgroup_C21_to_OL_C12':float(
+            np.linalg.norm(
+                coordinates[(headgroup,'C21')][0]
+                - coordinates[('OL','C12')][0]
+            )
+        ),
+    }
+
+    if headgroup in {'PE','PS'}:
+        distances[
+            f'PA_C12_to_{headgroup}_O12'
+        ]=float(
+            np.linalg.norm(
+                coordinates[('PA','C12')][0]
+                - coordinates[(headgroup,'O12')][0]
+            )
+        )
+
+    return distances
+
+
+def _modular_lipid_junctions_valid(item,headgroup,cfg):
+    """Reject malformed modular-lipid bonds and internal clashes."""
+    distances=_modular_lipid_junction_distances(
+        item,
+        headgroup,
+    )
+    if distances is None:
+        return False,{}
+
+    settings=cfg.get('complex_membrane',{})
+
+    junction_minimum=float(settings.get(
+        'modular_lipid_junction_minimum_angstrom',
+        1.25,
+    ))
+    junction_maximum=float(settings.get(
+        'modular_lipid_junction_maximum_angstrom',
+        1.75,
+    ))
+
+    junction_keys=(
+        'PA_C12_to_headgroup_C11',
+        'headgroup_C21_to_OL_C12',
+    )
+
+    junctions_valid=all(
+        junction_minimum<=distances[key]<=junction_maximum
+        for key in junction_keys
+    )
+
+    # Packaged POPE references span about 2.27--2.55 A for this
+    # nonbonded cross-module distance. A 1.75 A hard floor leaves
+    # approximately 0.5 A tolerance below the smallest reference
+    # geometry while excluding the observed 0.50--0.92 A contacts.
+    internal_clearance_valid=True
+
+    if headgroup in {'PE','PS'}:
+        species_key=(
+            'pope'
+            if headgroup=='PE'
+            else 'pops'
+        )
+        distance_key=(
+            f'PA_C12_to_{headgroup}_O12'
+        )
+        internal_heavy_minimum=float(settings.get(
+            f'{species_key}_PA_C12_{headgroup}_O12_minimum_angstrom',
+            1.75,
+        ))
+        internal_clearance_valid=(
+            distances[distance_key]
+            >= internal_heavy_minimum
+        )
+
+    return (
+        junctions_valid and internal_clearance_valid,
+        distances,
+    )
+
+
+def _place_exact_headgroup_target(
+    items,eligible,target,donors,fixed_cells,cfg,rng,
+    leaf,headgroup,species
+):
+    """Place exact POPS/POPE targets with geometry and periodic checks."""
+    candidates=[
+        index
+        for index in eligible
+        if items[index]['species']=='POPC'
+    ]
+    rng.shuffle(candidates)
+
+    placed=[]
+    failures=[]
+
+    donor_pool=[
+        molecule
+        for molecule in donors
+        if molecule['leaflet']==leaf
+    ] or donors
+
     key=species.lower()+'_donors_per_site'
-    donor_limit=min(len(donor_pool),int(cfg.get('complex_membrane',{}).get(key,64)))
+    donor_limit=min(
+        len(donor_pool),
+        int(
+            cfg.get('complex_membrane',{}).get(
+                key,
+                64,
+            )
+        ),
+    )
+
     for index in candidates:
-        if len(placed)>=target: break
-        order=list(rng.permutation(len(donor_pool)))[:donor_limit]; best=None
+        if len(placed)>=target:
+            break
+
+        order=list(
+            rng.permutation(len(donor_pool))
+        )[:donor_limit]
+
+        best=None
+        geometry_rejections=0
+        intermolecular_rejections=0
+
         for donor_index in order:
-            attempt=_convert_popc_headgroup_item(items[index],[donor_pool[donor_index]],rng,headgroup,species)
-            if attempt is None: continue
-            valid,score,minima=_validate_replacement_item(attempt,index,items,fixed_cells,cfg)
-            if not valid: continue
-            if best is None or score<best[0]: best=(score,attempt,minima)
-            if score<=1e-12: break
+            attempt=_convert_popc_headgroup_item(
+                items[index],
+                [donor_pool[donor_index]],
+                rng,
+                headgroup,
+                species,
+            )
+
+            if attempt is None:
+                geometry_rejections+=1
+                continue
+
+            junction_valid,junction_distances=(
+                _modular_lipid_junctions_valid(
+                    attempt,
+                    headgroup,
+                    cfg,
+                )
+            )
+
+            if not junction_valid:
+                geometry_rejections+=1
+                continue
+
+            valid,packing_score,minima=(
+                _validate_replacement_item(
+                    attempt,
+                    index,
+                    items,
+                    fixed_cells,
+                    cfg,
+                )
+            )
+
+            if not valid:
+                intermolecular_rejections+=1
+                continue
+
+            junction_score=sum(
+                (
+                    junction_distances[junction_key]-1.52
+                )**2
+                for junction_key in (
+                    'PA_C12_to_headgroup_C11',
+                    'headgroup_C21_to_OL_C12',
+                )
+            )
+
+            internal_clearance_penalty=0.0
+
+            if headgroup in {'PE','PS'}:
+                species_key=(
+                    'pope'
+                    if headgroup=='PE'
+                    else 'pops'
+                )
+                distance_key=(
+                    f'PA_C12_to_{headgroup}_O12'
+                )
+                clearance=(
+                    junction_distances[
+                        distance_key
+                    ]
+                )
+
+                # Prefer reference-like cross-module clearance
+                # after the candidate passes the hard floor.
+                preferred_clearance=float(
+                    cfg.get(
+                        'complex_membrane',
+                        {},
+                    ).get(
+                        f'{species_key}_PA_C12_{headgroup}_O12_preferred_angstrom',
+                        2.30,
+                    )
+                )
+
+                internal_clearance_penalty=max(
+                    0.0,
+                    preferred_clearance-clearance,
+                )**2
+
+            combined_score=(
+                float(packing_score)
+                + 100.0*float(junction_score)
+                + 100.0*float(
+                    internal_clearance_penalty
+                )
+            )
+
+            if best is None or combined_score < best[0]:
+                best=(
+                    combined_score,
+                    attempt,
+                    minima,
+                    junction_distances,
+                )
+
         if best is None:
-            failures.append({'site_index':index,'reason':f'no_valid_{species.lower()}_conversion'}); continue
-        score,attempt,minima=best; items[index]=attempt
-        placed.append({'site_index':index,'score':float(score),'minimum_distances':minima})
+            failures.append({
+                'site_index':index,
+                'reason':f'no_valid_{species.lower()}_conversion',
+                'geometry_rejections':geometry_rejections,
+                'intermolecular_rejections':intermolecular_rejections,
+            })
+            continue
+
+        score,attempt,minima,junction_distances=best
+        attempt['canonical_site_id']=items[index].get(
+            'canonical_site_id',
+            (index,),
+        )
+        items[index]=attempt
+
+        placed.append({
+            'site_index':index,
+            'score':float(score),
+            'minimum_distances':minima,
+            'junction_distances_angstrom':junction_distances,
+        })
+
     if len(placed)!=target:
-        raise RuntimeError(f'Exact composition failed: requested {target} {species} in {leaf}, placed {len(placed)} after testing {len(candidates)} POPC sites.')
+        raise RuntimeError(
+            f'Exact composition failed: requested {target} {species} '
+            f'in {leaf}, placed {len(placed)} after testing '
+            f'{len(candidates)} POPC sites.'
+        )
+
     return placed,failures
 
 
@@ -1510,7 +1789,20 @@ def _apply_complex_composition(items,fixed,lower,upper,cfg,rng):
             order=('POPC','POPE','POPS','CHL','CUSTOM_STEROL')
         else: order=('POPC','POPE','POPS','CHL')
         counts=_allocate_leaflet_counts(total,alloc_fractions,order)
-        eligible=[i for i in idx if items[i]['species']=='POPC' and _distance_to_fixed_xy(items[i]['anchor'],membrane_fixed)>=shell]
+        # The protein-aware host builder has already decided which POPC sites
+        # can exist at the protein interface. Mixed-lipid composition is a
+        # one-for-one replacement of those accepted host sites and must not
+        # carve or expand the protein exclusion region.
+        #
+        # Allow every accepted POPC host site to be tested as a donor. The
+        # periodic atom-level replacement validator still rejects any CHL,
+        # POPS, or POPE candidate that clashes with the fixed protein,
+        # retained structural waters, or another membrane molecule.
+        eligible=[
+            i
+            for i in idx
+            if items[i]['species']=='POPC'
+        ]
         replacements=counts.get('CHL',0)+counts.get('CUSTOM_STEROL',0)+counts.get('POPS',0)+counts.get('POPE',0)
         if len(eligible)<replacements: raise RuntimeError(f'Exact composition impossible in {leaf}: {len(eligible)} eligible sites for {replacements} replacements')
         chl,chl_bad=(_place_exact_cholesterol_target(items,eligible,counts['CHL'],chl_ref,fixed_cells,cfg,rng,leaf) if counts['CHL'] else ([],[]))
@@ -1522,7 +1814,7 @@ def _apply_complex_composition(items,fixed,lower,upper,cfg,rng):
         expected={name:counts.get(name,0) for name in ('POPC','POPE','POPS','CHL')}
         if custom_template: expected[custom_template['species']]=counts.get('CUSTOM_STEROL',0)
         if actual!=expected: raise RuntimeError(f'Composition verification failed in {leaf}: expected {expected}, got {actual}')
-        report['leaflets'][leaf]={'total':total,'requested_fractions':alloc_fractions,'target':expected,'actual':actual,'eligible_bulk_sites':len(eligible),
+        report['leaflets'][leaf]={'total':total,'requested_fractions':alloc_fractions,'target':expected,'actual':actual,'eligible_host_sites':len(eligible),
           'cholesterol_placements':chl,'cholesterol_failed_sites':chl_bad,'custom_sterol_placements':custom,'custom_sterol_failed_sites':custom_bad,
           'pops_conversions':pops,'pops_failed_sites':pops_bad,'pope_conversions':pope,'pope_failed_sites':pope_bad}
     return items,report

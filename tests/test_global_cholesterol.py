@@ -71,3 +71,32 @@ def test_protein_build_sets_periodic_box_before_composition():
     composition = source.index("_apply_complex_composition")
 
     assert assignment < composition
+
+
+def test_protein_composition_tests_all_accepted_host_sites():
+    """Composition replacement must not recarve the protein interface."""
+    import inspect
+    from ambmem import protein_popc as builder
+
+    source = inspect.getsource(builder._apply_complex_composition)
+
+    assert "if items[i]['species']=='POPC'" in source
+    assert (
+        "_distance_to_fixed_xy(items[i]['anchor'],membrane_fixed)>=shell"
+        not in source.replace(" ", "")
+    )
+
+
+def test_protein_shell_is_not_changed_by_composition():
+    """The shell remains diagnostic and must not be modified in composition."""
+    import inspect
+    from ambmem import protein_popc as builder
+
+    source = inspect.getsource(builder._apply_complex_composition)
+
+    assert "protein_exclusion_shell_angstrom" in source
+    assert "shell=" not in source.replace(
+        "shell=float(settings.get("
+        "'protein_exclusion_shell_angstrom',8.0))",
+        "",
+    )
