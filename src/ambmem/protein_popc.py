@@ -2759,7 +2759,9 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
         energy_threshold_kj_mol=float(validation_cfg.get('energy_threshold_kj_mol',1.0e12)),
         cpptraj_cutoff_angstrom=float(validation_cfg.get('cpptraj_cutoff_angstrom',10.0)),
         report_limit=int(validation_cfg.get('report_limit',100)),
-        report_path=out/'final_validation.json')
+        report_path=out/'final_validation.json',
+        authoritative_solute_prmtop=prepared_solute_top,
+        authoritative_solute_rst7=prepared_solute_rst)
     retained_input_waters=sum(
         residue.name.strip() in {'WAT','HOH','OPC'} for residue in solute.residues)
     result={'solute_prmtop':str(solute_prmtop),'solute_coordinates':str(solute_rst7),

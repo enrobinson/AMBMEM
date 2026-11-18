@@ -28,11 +28,153 @@ def _label(atom) -> str:
     return f"{atom.idx + 1}:{residue.name.strip()}:{residue.idx + 1}:{atom.name.strip()}"
 
 
+
+_PROTEIN_RESIDUES = {
+    "ALA", "ARG", "ASH", "ASN", "ASP", "CYM", "CYS", "CYX",
+    "GLH", "GLN", "GLU", "GLY", "HID", "HIE", "HIP", "HIS",
+    "ILE", "LEU", "LYN", "LYS", "MET", "PHE", "PRO", "SER",
+    "THR", "TRP", "TYR", "VAL",
+}
+
+
+def _is_protein_atom(atom) -> bool:
+    return atom.residue.name.strip().upper() in _PROTEIN_RESIDUES
+
+
+def _stable_atom_identity(atom):
+    """Identity preserved when the authoritative solute enters the final pair."""
+    return (
+        atom.residue.name.strip().upper(),
+        int(atom.residue.idx) + 1,
+        atom.name.strip().upper(),
+    )
+
+
+def _stable_pair_identity(atom1, atom2):
+    return tuple(sorted((
+        _stable_atom_identity(atom1),
+        _stable_atom_identity(atom2),
+    )))
+
+
+def _preexisting_protein_heavy_pairs(structure, cutoff: float):
+    """Find nonbonded protein-protein heavy contacts in the prepared solute."""
+    xyz = np.asarray(structure.coordinates, dtype=float).reshape((-1, 3))
+
+    selected = [
+        atom.idx
+        for atom in structure.atoms
+        if (
+            _is_protein_atom(atom)
+            and not _is_virtual(atom)
+            and int(getattr(atom, "atomic_number", 0) or 0) > 1
+        )
+    ]
+
+    bonded = {
+        tuple(sorted((bond.atom1.idx, bond.atom2.idx)))
+        for bond in structure.bonds
+    }
+
+    width = max(float(cutoff), 1.0)
+    cells = defaultdict(list)
+
+    for index in selected:
+        key = tuple(
+            np.floor(xyz[index] / width).astype(int)
+        )
+        cells[key].append(index)
+
+    allowed = {}
+    visited = set()
+    offsets = [
+        (x, y, z)
+        for x in (-1, 0, 1)
+        for y in (-1, 0, 1)
+        for z in (-1, 0, 1)
+    ]
+
+    for key, indices in cells.items():
+        for offset in offsets:
+            neighbor = tuple(
+                np.asarray(key) + np.asarray(offset)
+            )
+
+            for i in indices:
+                for j in cells.get(neighbor, ()):
+                    pair_index = tuple(sorted((i, j)))
+
+                    if (
+                        i == j
+                        or pair_index in visited
+                        or pair_index in bonded
+                    ):
+                        continue
+
+                    visited.add(pair_index)
+
+                    distance = float(
+                        np.linalg.norm(xyz[j] - xyz[i])
+                    )
+
+                    if distance >= cutoff:
+                        continue
+
+                    atom1 = structure.atoms[i]
+                    atom2 = structure.atoms[j]
+                    pair_key = _stable_pair_identity(atom1, atom2)
+
+                    allowed[pair_key] = {
+                        "distance_angstrom": distance,
+                        "atom1": _label(atom1),
+                        "atom2": _label(atom2),
+                        "classification": (
+                            "preexisting_authoritative_solute_"
+                            "protein_protein_contact"
+                        ),
+                    }
+
+    return allowed
+
+
+def _cpptraj_pair_identity(line):
+    """Extract a stable pair identity from one CPPTRAJ warning line."""
+    pattern = re.compile(
+        r"Atoms\s+\d+:([^_]+)_(\d+)@(\S+)\s+and\s+"
+        r"\d+:([^_]+)_(\d+)@(\S+)\s+are close"
+    )
+    match = pattern.search(line)
+
+    if not match:
+        return None
+
+    res1, resid1, atom1, res2, resid2, atom2 = match.groups()
+
+    return tuple(sorted((
+        (
+            res1.strip().upper(),
+            int(resid1),
+            atom1.strip().upper(),
+        ),
+        (
+            res2.strip().upper(),
+            int(resid2),
+            atom2.strip().upper(),
+        ),
+    )))
+
+
 def _minimum_image(delta: np.ndarray, lengths: np.ndarray) -> np.ndarray:
     return delta - lengths * np.rint(delta / lengths)
 
 
-def _periodic_pair_scan(structure, unrelated_cutoff: float, heavy_cutoff: float, report_limit: int):
+def _periodic_pair_scan(
+    structure,
+    unrelated_cutoff: float,
+    heavy_cutoff: float,
+    report_limit: int,
+    allowed_protein_pairs=None,
+):
     xyz = np.asarray(structure.coordinates, dtype=float).reshape((-1, 3))
     box = np.asarray(structure.box, dtype=float)
     if box.size < 6 or np.any(~np.isfinite(box)) or np.any(box[:3] <= 0):
@@ -51,7 +193,9 @@ def _periodic_pair_scan(structure, unrelated_cutoff: float, heavy_cutoff: float,
         key = tuple(np.floor((wrapped[index] + 0.5 * lengths) / lengths * ncell).astype(int) % ncell)
         cells[key].append(index)
 
+    allowed_protein_pairs = allowed_protein_pairs or {}
     severe, heavy = [], []
+    allowed_heavy = []
     minimum_all = (math.inf, None)
     minimum_heavy = (math.inf, None)
     visited = set()
@@ -87,7 +231,20 @@ def _periodic_pair_scan(structure, unrelated_cutoff: float, heavy_cutoff: float,
                         if distance < minimum_heavy[0]:
                             minimum_heavy = (distance, pair)
                         if distance < heavy_cutoff:
-                            heavy.append(pair)
+                            pair_key = _stable_pair_identity(
+                                atom_i,
+                                atom_j,
+                            )
+
+                            if pair_key in allowed_protein_pairs:
+                                warning = dict(pair)
+                                warning["classification"] = (
+                                    "preexisting_authoritative_solute_"
+                                    "protein_protein_contact"
+                                )
+                                allowed_heavy.append(warning)
+                            else:
+                                heavy.append(pair)
 
     severe.sort(key=lambda item: item["distance_angstrom"])
     heavy.sort(key=lambda item: item["distance_angstrom"])
@@ -98,8 +255,12 @@ def _periodic_pair_scan(structure, unrelated_cutoff: float, heavy_cutoff: float,
         "minimum_nonbonded_heavy_pair": minimum_heavy[1],
         "unrelated_pairs_below_cutoff": len(severe),
         "heavy_pairs_below_cutoff": len(heavy),
+        "allowed_preexisting_protein_heavy_pairs": len(allowed_heavy),
         "worst_unrelated_pairs": severe[:report_limit],
         "worst_heavy_pairs": heavy[:report_limit],
+        "preexisting_protein_contact_warnings": (
+            allowed_heavy[:report_limit]
+        ),
     }
 
 
@@ -204,6 +365,8 @@ def validate_final_system(
     cpptraj_cutoff_angstrom: float = 10.0,
     report_limit: int = 100,
     report_path: str | Path | None = None,
+    authoritative_solute_prmtop: str | Path | None = None,
+    authoritative_solute_rst7: str | Path | None = None,
 ):
     import parmed as pmd
 
@@ -217,8 +380,85 @@ def validate_final_system(
     if np.any(~np.isfinite(xyz)):
         raise FinalValidationError("Final coordinates contain NaN or Inf")
 
-    pair_report = _periodic_pair_scan(structure, unrelated_cutoff_angstrom, heavy_cutoff_angstrom, report_limit)
-    cpptraj_report = _run_cpptraj(prmtop, rst7, prmtop.parent, bond_offset_angstrom, cpptraj_cutoff_angstrom)
+    allowed_protein_pairs = {}
+
+    if (
+        authoritative_solute_prmtop is not None
+        and authoritative_solute_rst7 is not None
+    ):
+        solute_prmtop = Path(authoritative_solute_prmtop)
+        solute_rst7 = Path(authoritative_solute_rst7)
+
+        if not solute_prmtop.is_file() or not solute_rst7.is_file():
+            raise FinalValidationError(
+                "Missing authoritative prepared-solute pair for "
+                "protein-contact classification"
+            )
+
+        authoritative_solute = pmd.load_file(
+            str(solute_prmtop),
+            xyz=str(solute_rst7),
+        )
+
+        allowed_protein_pairs = (
+            _preexisting_protein_heavy_pairs(
+                authoritative_solute,
+                heavy_cutoff_angstrom,
+            )
+        )
+
+    pair_report = _periodic_pair_scan(
+        structure,
+        unrelated_cutoff_angstrom,
+        heavy_cutoff_angstrom,
+        report_limit,
+        allowed_protein_pairs=allowed_protein_pairs,
+    )
+
+    cpptraj_report = _run_cpptraj(
+        prmtop,
+        rst7,
+        prmtop.parent,
+        bond_offset_angstrom,
+        cpptraj_cutoff_angstrom,
+    )
+
+    raw_heavy_problems = list(
+        cpptraj_report["heavy_atom_problems"]
+    )
+    allowed_cpptraj_heavy = []
+    fatal_cpptraj_heavy = []
+
+    for line in raw_heavy_problems:
+        pair_key = _cpptraj_pair_identity(line)
+
+        if (
+            pair_key is not None
+            and pair_key in allowed_protein_pairs
+        ):
+            allowed_cpptraj_heavy.append(line)
+        else:
+            fatal_cpptraj_heavy.append(line)
+
+    cpptraj_report["raw_heavy_atom_problem_count"] = len(
+        raw_heavy_problems
+    )
+    cpptraj_report["raw_heavy_atom_problems"] = (
+        raw_heavy_problems[:report_limit]
+    )
+    cpptraj_report[
+        "allowed_preexisting_protein_heavy_problem_count"
+    ] = len(allowed_cpptraj_heavy)
+    cpptraj_report[
+        "allowed_preexisting_protein_heavy_problems"
+    ] = allowed_cpptraj_heavy[:report_limit]
+    cpptraj_report["heavy_atom_problem_count"] = len(
+        fatal_cpptraj_heavy
+    )
+    cpptraj_report["heavy_atom_problems"] = (
+        fatal_cpptraj_heavy[:report_limit]
+    )
+
     energy_kj = cpptraj_report["energy"]["total_kj_mol"]
     failures = []
     if pair_report["unrelated_pairs_below_cutoff"]:
@@ -250,6 +490,34 @@ def validate_final_system(
         },
         "pair_scan": pair_report,
         "cpptraj": cpptraj_report,
+        "accepted_warnings": {
+            "policy": (
+                "Only nonbonded heavy-atom protein-protein contacts "
+                "already present in the authoritative prepared solute "
+                "are warnings. New protein contacts and all "
+                "protein-environment contacts remain fatal."
+            ),
+            "authoritative_solute_prmtop": (
+                None
+                if authoritative_solute_prmtop is None
+                else str(Path(
+                    authoritative_solute_prmtop
+                ).resolve())
+            ),
+            "authoritative_solute_rst7": (
+                None
+                if authoritative_solute_rst7 is None
+                else str(Path(
+                    authoritative_solute_rst7
+                ).resolve())
+            ),
+            "preexisting_protein_pair_count": len(
+                allowed_protein_pairs
+            ),
+            "preexisting_protein_pairs": list(
+                allowed_protein_pairs.values()
+            )[:report_limit],
+        },
         "bond_ring_intersection": {
             "implemented": False,
             "status": "pending_for_public_1.0",
