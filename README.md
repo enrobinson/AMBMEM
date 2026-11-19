@@ -24,7 +24,6 @@ AMBMEM must run inside a Conda environment containing:
 
 - AmberTools 26 or newer
 - Python 3.10 or newer
-- ParmEd from the AmberTools environment
 - NumPy
 - PyYAML
 
@@ -96,28 +95,6 @@ Custom parameters are not bundled. Users provide matching MOL2, Amber LIB/OFF, a
 
 Version 0.1.0 is an internal research preview. Additional Amber lipid types require characterization before full support is claimed.
 
-<!-- BEGIN AMBMEM-0.1.2-SAFETY -->
-## Periodic membrane sizing
-
-For membrane-only builds, `membrane_only.box_xy_angstrom` is an approximate lateral-size target. AMBMEM selects the nearest complete periodic supercell supported by the packaged POPC reference instead of cropping a noncommensurate box.
-
-For example:
-
-```yaml
-membrane_only:
-  enabled: true
-  box_xy_angstrom: [120.0, 120.0]
-```
-
-The packaged POPC reference cell is approximately `63.491 x 63.805 A`. A 120 A target therefore selects a `2 x 2` supercell with an actual lateral box of approximately `126.982 x 127.610 A`.
-
-AMBMEM retains all molecules in the complete supercell and converts requested leaflet percentages to the nearest realizable integer counts. For 256 molecules per leaflet:
-
-- 95% POPC and 5% cholesterol becomes 243 POPC and 13 CHL per leaflet.
-- 90% POPC, 5% cholesterol, and 5% custom sterol becomes 230 POPC, 13 CHL, and 13 custom sterol molecules per leaflet.
-
-The requested percentages, selected repeats, actual box, integer counts, and realized fractions are recorded in `report.json`.
-
 ## Simulation-readiness validation
 
 AMBMEM validates the exact final `topology.prmtop` and `coordinates.rst7` after packing, sterol replacement, OPC placement, ion placement, topology generation, and periodic box assignment.
@@ -135,34 +112,3 @@ The final gate includes:
 
 A passing output contains `final_validation.json`, CPPTRAJ diagnostics, and `SIMULATION_READY`. Do not minimize or simulate an output unless `SIMULATION_READY` is present.
 
-## Replica consistency
-
-Replicas from the same composition and periodic supercell keep lipid, cholesterol, custom-sterol, and ion counts consistent and use deterministic dry atom ordering. Different seeds can change accepted OPC water counts because solvent-excluded volume changes slightly.
-
-Users who require one shared topology may normalize waters afterward with ParmEd and validate that shared topology against every restart. AMBMEM does not apply hydrogen mass repartitioning.
-<!-- END AMBMEM-0.1.2-SAFETY -->
-
-## Canonical replica topology ordering
-
-AMBMEM assigns each periodic host-lipid location a stable site ID.
-When a site is converted to cholesterol, POPS, POPE, or a user-supplied
-custom sterol, the replacement retains that ID.
-
-Before topology generation, membrane molecules are ordered
-deterministically by:
-
-1. molecular species
-2. leaflet
-3. canonical host-site ID
-
-This makes the dry residue and atom order independent of the random
-seed. Replicas generated from the same composition retain identical
-lipid, sterol, and ion ordering while containing different coordinates.
-
-Accepted OPC water counts can differ because sterol positions alter the
-solvent-excluded volume. Users requiring one shared topology can remove
-complete excess OPC residues to a common count, then validate one
-canonical topology against every matched restart.
-
-AMBMEM does not apply hydrogen mass repartitioning. HMR can be applied
-once afterward to the validated shared topology.

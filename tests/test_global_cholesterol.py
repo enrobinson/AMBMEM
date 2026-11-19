@@ -87,16 +87,21 @@ def test_protein_composition_tests_all_accepted_host_sites():
     )
 
 
-def test_protein_shell_is_not_changed_by_composition():
-    """The shell remains diagnostic and must not be modified in composition."""
+def test_composition_reuses_existing_protein_packed_host():
+    """Composition must reuse host sites without recarving the interface."""
     import inspect
     from ambmem import protein_popc as builder
 
-    source = inspect.getsource(builder._apply_complex_composition)
+    source = inspect.getsource(
+        builder._apply_complex_composition
+    )
 
-    assert "protein_exclusion_shell_angstrom" in source
-    assert "shell=" not in source.replace(
-        "shell=float(settings.get("
-        "'protein_exclusion_shell_angstrom',8.0))",
-        "",
+    assert "protein_exclusion_shell_angstrom" not in source
+    assert "membrane_fixed" not in source
+    assert (
+        "reuse_existing_protein_packed_host_sites"
+        in source
+    )
+    assert "'protein_interface_recarved':False" in (
+        source.replace(" ", "")
     )
