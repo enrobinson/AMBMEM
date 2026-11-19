@@ -215,6 +215,25 @@ import copy
 # V0.16.2 COMMENSURATE PERIODIC BUILDER
 # V0.16.0 CPPTRAJ EXACT-FINAL-PAIR GATE
 from .final_validation import validate_final_system
+from .defaults import (
+    CHARGE_INTEGER_TOLERANCE_E,
+    CHOLESTEROL_GLOBAL_ATTEMPTS,
+    CHOLESTEROL_MINIMUM_HH_DISTANCE_ANGSTROM,
+    CHOLESTEROL_TRIALS_PER_SITE,
+    EDGE_PADDING_ANGSTROM,
+    FIXED_HEAVY_LIPID_HEAVY_ANGSTROM,
+    FIXED_HEAVY_LIPID_HYDROGEN_ANGSTROM,
+    FOOTPRINT_Z_MARGIN_ANGSTROM,
+    LIPID_HYDROGEN_HYDROGEN_ANGSTROM,
+    MEMBRANE_ONLY_INITIAL_BOX_Z_ANGSTROM,
+    MINIMUM_ION_FIXED_HEAVY_DISTANCE_ANGSTROM,
+    MINIMUM_ION_ION_DISTANCE_ANGSTROM,
+    MODULAR_INTERNAL_CLEARANCE_MINIMUM_ANGSTROM,
+    MODULAR_INTERNAL_CLEARANCE_PREFERRED_ANGSTROM,
+    MODULAR_JUNCTION_MAXIMUM_ANGSTROM,
+    MODULAR_JUNCTION_MINIMUM_ANGSTROM,
+    PROTEIN_MEMBRANE_INITIAL_BOX_Z_ANGSTROM,
+)
 # V0.15.1 MEMBRANE-ONLY PACKING DEFAULTS
 # V0.15.0 MEMBRANE-ONLY BUILDER
 # V0.14.0 GENERIC CUSTOM STEROL PLACEMENT
@@ -974,8 +993,8 @@ def _refill_boundary_sites(removed,molecules,kept,fixed,lower,upper,box,cfg,rng)
     cell_width=4.0
 
     fixed_cells=build_fixed_cells(fixed,cell_width)
-    fixed_heavy=float(cfg['packing'].get('fixed_heavy_lipid_heavy_angstrom',2.0))
-    fixed_hydrogen=float(cfg['packing'].get('fixed_heavy_lipid_hydrogen_angstrom',1.2))
+    fixed_heavy=FIXED_HEAVY_LIPID_HEAVY_ANGSTROM
+    fixed_hydrogen=FIXED_HEAVY_LIPID_HYDROGEN_ANGSTROM
     hh=float(settings.get('lipid_heavy_heavy_angstrom',1.5))
     hx=float(settings.get('lipid_heavy_hydrogen_angstrom',1.05))
     xx=float(settings.get('lipid_hydrogen_hydrogen_angstrom',0.8))
@@ -1321,10 +1340,9 @@ def _modular_lipid_junctions_valid(item,headgroup,cfg):
         distance_key=(
             f'PA_C12_to_{headgroup}_O12'
         )
-        internal_heavy_minimum=float(settings.get(
-            f'{species_key}_PA_C12_{headgroup}_O12_minimum_angstrom',
-            1.75,
-        ))
+        internal_heavy_minimum=(
+            MODULAR_INTERNAL_CLEARANCE_MINIMUM_ANGSTROM
+        )
         internal_clearance_valid=(
             distances[distance_key]
             >= internal_heavy_minimum
@@ -1448,14 +1466,8 @@ def _place_exact_headgroup_target(
 
                 # Prefer reference-like cross-module clearance
                 # after the candidate passes the hard floor.
-                preferred_clearance=float(
-                    cfg.get(
-                        'complex_membrane',
-                        {},
-                    ).get(
-                        f'{species_key}_PA_C12_{headgroup}_O12_preferred_angstrom',
-                        2.30,
-                    )
+                preferred_clearance=(
+                    MODULAR_INTERNAL_CLEARANCE_PREFERRED_ANGSTROM
                 )
 
                 internal_clearance_penalty=max(
@@ -1574,12 +1586,12 @@ def _convert_popc_to_pops_item(item,donors,rng):
 def _place_chl_item(host,donors,fixed_cells,lipid_items,cfg,rng):
     settings=cfg['complex_membrane']; cell_width=4.0
     lipid_cells=_build_atom_cells([item for item in lipid_items if item is not host],cell_width)
-    fixed_heavy=float(cfg.get('packing',{}).get('fixed_heavy_lipid_heavy_angstrom',2.0))
-    fixed_hydrogen=float(cfg.get('packing',{}).get('fixed_heavy_lipid_hydrogen_angstrom',1.2))
+    fixed_heavy=FIXED_HEAVY_LIPID_HEAVY_ANGSTROM
+    fixed_hydrogen=FIXED_HEAVY_LIPID_HYDROGEN_ANGSTROM
     hh=1.5; hx=1.05; xx=0.8
     pool=[m for m in donors if m['leaflet']==host['leaflet']] or donors
     best=None
-    for _ in range(int(settings.get('cholesterol_trials',160))):
+    for _ in range(CHOLESTEROL_TRIALS_PER_SITE):
         donor=pool[int(rng.integers(len(pool)))]
         angle=float(rng.uniform(0,2*math.pi)); offset=np.array([rng.uniform(-2,2),rng.uniform(-2,2),rng.uniform(-1.2,1.2)])
         xyz,anchor,elements=_atom_arrays_from_molecule(donor,angle=angle,target_anchor=host['anchor'],shift=offset)
@@ -1682,7 +1694,7 @@ def _place_exact_cholesterol_target_single_attempt(items,eligible,target,donors,
             failures.append({'site_index':index,'reason':'no_valid_chl_candidate'})
             continue
         valid,score,minima=_validate_replacement_item(candidate,index,items,fixed_cells,cfg)
-        floor=float(cfg['complex_membrane'].get('cholesterol_minimum_hydrogen_hydrogen_angstrom',1.15))
+        floor=CHOLESTEROL_MINIMUM_HH_DISTANCE_ANGSTROM
         if not valid or minima['lipid_hydrogen_hydrogen']<floor:
             failures.append({'site_index':index,'reason':'final_recheck_failed','minimum_distances':minima})
             continue
@@ -1703,7 +1715,7 @@ def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg
     """Place an exact CHL target with distributed sites and pristine retries."""
     if target<=0: return [],[]
     settings=cfg.get('complex_membrane',{})
-    attempts=max(1,int(settings.get('cholesterol_global_attempts',12)))
+    attempts=CHOLESTEROL_GLOBAL_ATTEMPTS
     original=copy.deepcopy(items)
     errors=[]
     for attempt_number in range(1,attempts+1):
@@ -1761,28 +1773,29 @@ def _apply_complex_composition(items,fixed,lower,upper,cfg,rng):
     settings=cfg.get('complex_membrane',{})
     modern=cfg.get('membrane',{}).get('composition',{})
     if not settings.get('enabled',False) and not modern: return items,{}
-    membrane_fixed=[atom for atom in fixed if lower-8<=atom['xyz'][2]<=upper+8]
-    shell=float(settings.get('protein_exclusion_shell_angstrom',8.0))
     chl_needed=any(_composition_fraction(settings,cfg,leaf,'CHL',0.0)>0 for leaf in ('upper','lower'))
-    chl_ref=_parse_chl_reference(settings.get('CHL_reference',_packaged_lipid_reference('CHL').with_name('conformers.pdb'))) if chl_needed else []
+    chl_ref=_parse_chl_reference(_packaged_lipid_reference('CHL').with_name('conformers.pdb')) if chl_needed else []
     custom_settings=_custom_sterol_settings(cfg); custom_template=_custom_sterol_template(custom_settings) if custom_settings else None
     pops_needed=any(_composition_fraction(settings,cfg,leaf,'POPS',0.0)>0 for leaf in ('upper','lower'))
     pope_needed=any(_composition_fraction(settings,cfg,leaf,'POPE',0.0)>0 for leaf in ('upper','lower'))
-    pops_ref=_parse_modular_lipid_reference(settings.get('POPS_reference',_packaged_lipid_reference('POPS')),'PS','POPS') if pops_needed else []
-    pope_ref=_parse_modular_lipid_reference(settings.get('POPE_reference',_packaged_lipid_reference('POPE')),'PE','POPE') if pope_needed else []
+    pops_ref=_parse_modular_lipid_reference(_packaged_lipid_reference('POPS'),'PS','POPS') if pops_needed else []
+    pope_ref=_parse_modular_lipid_reference(_packaged_lipid_reference('POPE'),'PE','POPE') if pope_needed else []
     fixed_cells=build_fixed_cells(fixed,4.0)
-    report={'order':['CHL','CUSTOM_STEROL','POPS','POPE'],'protected_shell_angstrom':shell,'leaflets':{}}
+    report={
+        'order':['CHL','CUSTOM_STEROL','POPS','POPE'],
+        'host_interface_policy':'reuse_existing_protein_packed_host_sites',
+        'protein_interface_recarved':False,
+        'leaflets':{},
+    }
     for leaf in ('upper','lower'):
         idx=[i for i,item in enumerate(items) if item['leaflet']==leaf]; total=len(idx)
-        fractions={name:_composition_fraction(settings,cfg,leaf,name,1.0 if name=='POPC' else 0.0) for name in ('POPC','POPE','POPS','CHL')}
+        fractions={
+            name:float(modern[leaf][name])
+            for name in ('POPC','POPE','POPS','CHL')
+        }
         custom_fraction=0.0
         if custom_settings:
             custom_fraction=float(custom_settings.get('leaflets',{}).get(leaf,{}).get('fraction',custom_settings.get('fraction',0.0)))
-        # Legacy configurations omit POPC; infer it after fixed species are read.
-        modern_leaf=modern.get(leaf,{})
-        old_leaf=settings.get('leaflets',{}).get(leaf,{})
-        if 'POPC' not in modern_leaf and 'POPC_fraction' not in old_leaf:
-            fractions['POPC']=1.0-fractions['POPE']-fractions['POPS']-fractions['CHL']-custom_fraction
         alloc_fractions=dict(fractions)
         if custom_fraction:
             alloc_fractions['CUSTOM_STEROL']=custom_fraction
@@ -1925,7 +1938,7 @@ def _apply_opc_solvation(items,fixed,box,cfg):
     p31=[]
     for item in items:
         for atom,point in zip(item['molecule']['atoms'],item['xyz']):
-            if atom['name']=='P31' and atom['resname'] in {'PC','PS'}: p31.append(point)
+            if atom['name']=='P31' and atom['resname'] in {'PC','PE','PS'}: p31.append(point)
     if not p31: raise RuntimeError('Cannot identify membrane headgroup planes')
     upper_head=float(np.mean([p[2] for p in p31 if p[2]>0]))
     lower_head=float(np.mean([p[2] for p in p31 if p[2]<0]))
@@ -2063,7 +2076,7 @@ def _apply_opc_solvation(items,fixed,box,cfg):
     p31=[]
     for item in items:
         for atom,point in zip(item['molecule']['atoms'],item['xyz']):
-            if atom['name']=='P31' and atom['resname'] in {'PC','PS'}:
+            if atom['name']=='P31' and atom['resname'] in {'PC','PE','PS'}:
                 p31.append(point)
     if not p31:
         raise RuntimeError('Cannot identify membrane headgroup planes')
@@ -2302,8 +2315,8 @@ def _replace_opc_with_ions(items,cation_name,cation_resname,cation_element,
                             anion_name,anion_resname,anion_element,
                             cation_count,anion_count,cfg,rng):
     ion_cfg=cfg.get('ions',{})
-    minimum_fixed=float(ion_cfg.get('minimum_ion_fixed_heavy_distance_angstrom',4.0))
-    minimum_ion=float(ion_cfg.get('minimum_ion_ion_distance_angstrom',5.0))
+    minimum_fixed=MINIMUM_ION_FIXED_HEAVY_DISTANCE_ANGSTROM
+    minimum_ion=MINIMUM_ION_ION_DISTANCE_ANGSTROM
     candidates=[(idx,item) for idx,item in enumerate(items) if item.get('species')=='OPC']
     rng.shuffle(candidates)
     fixed_points=[]
@@ -2524,7 +2537,7 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
         assembled,out/'environment_preion',preion_top,preion_rst,
         out/'tleap_environment_preion.log',box,cfg)
     environment=pmd.load_file(str(preion_top),xyz=str(preion_rst))
-    tolerance=float(top_cfg.get('charge_integer_tolerance_e',0.001))
+    tolerance=CHARGE_INTEGER_TOLERANCE_E
     solute_charge=_rounded_integer_charge(sum(float(a.charge) for a in solute.atoms),tolerance)
     membrane_charge=_rounded_integer_charge(sum(float(a.charge) for a in environment.atoms),tolerance)
     preion_charge=solute_charge+membrane_charge
@@ -2741,7 +2754,6 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
             f'found={np.asarray(exact_final_system.box,dtype=float).tolist()}'
         )
 
-    validation_cfg=cfg.get('final_validation',{})
     if (
         structural_water_cleanup.get('hard_clashing_structural_waters',0)>0
         and structural_water_cleanup.get('policy')=='keep'
@@ -2753,12 +2765,6 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
 
     final_validation_report=validate_final_system(
         out/topology_name,out/coordinate_name,
-        unrelated_cutoff_angstrom=float(validation_cfg.get('unrelated_atom_cutoff_angstrom',0.5)),
-        heavy_cutoff_angstrom=float(validation_cfg.get('nonbonded_heavy_cutoff_angstrom',1.0)),
-        bond_offset_angstrom=float(validation_cfg.get('bond_length_offset_angstrom',0.5)),
-        energy_threshold_kj_mol=float(validation_cfg.get('energy_threshold_kj_mol',1.0e12)),
-        cpptraj_cutoff_angstrom=float(validation_cfg.get('cpptraj_cutoff_angstrom',10.0)),
-        report_limit=int(validation_cfg.get('report_limit',100)),
         report_path=out/'final_validation.json',
         authoritative_solute_prmtop=prepared_solute_top,
         authoritative_solute_rst7=prepared_solute_rst)
@@ -2850,7 +2856,7 @@ def _periodic_candidate_valid(candidate_xyz,candidate_elements,environment,box,c
     if not other_xyz:
         return True,0.0,{'lipid_heavy_heavy':999.0,'lipid_heavy_hydrogen':999.0,'lipid_hydrogen_hydrogen':999.0}
     other_xyz=np.asarray(other_xyz,float); other_elements=np.asarray(other_elements)
-    hh=1.5; hx=1.05; xx=float(cfg.get('packing',{}).get('lipid_hydrogen_hydrogen_angstrom',1.15))
+    hh=1.5; hx=1.05; xx=LIPID_HYDROGEN_HYDROGEN_ANGSTROM
     minima={'fixed_heavy_lipid_heavy':999.0,'fixed_heavy_lipid_hydrogen':999.0,
             'lipid_heavy_heavy':999.0,'lipid_heavy_hydrogen':999.0,'lipid_hydrogen_hydrogen':999.0}
     score=0.0
@@ -2915,7 +2921,7 @@ def _canonicalize_environment_item_order(items):
 def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
     """Parameterize membrane/water, add ions, and write final Amber files."""
     pmd=_require_parmed(); top_cfg=cfg.get('topology',{}); ion_cfg=cfg.get('ions',{})
-    tolerance=float(top_cfg.get('charge_integer_tolerance_e',0.01))
+    tolerance=CHARGE_INTEGER_TOLERANCE_E
 
     preion_top=out/'environment_preion.prmtop'; preion_rst=out/'environment_preion.rst7'
     preion_interchange=_tleap_environment_topology_from_items(
@@ -2958,15 +2964,8 @@ def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
     coordinate_name=top_cfg.get('output_rst7','coordinates.rst7')
     final_system.save(str(out/topology_name),overwrite=True)
     final_system.save(str(out/coordinate_name),format='rst7',overwrite=True)
-    validation_cfg=cfg.get('final_validation',{})
     final_validation_report=validate_final_system(
         out/topology_name,out/coordinate_name,
-        unrelated_cutoff_angstrom=float(validation_cfg.get('unrelated_atom_cutoff_angstrom',0.5)),
-        heavy_cutoff_angstrom=float(validation_cfg.get('nonbonded_heavy_cutoff_angstrom',1.0)),
-        bond_offset_angstrom=float(validation_cfg.get('bond_length_offset_angstrom',0.5)),
-        energy_threshold_kj_mol=float(validation_cfg.get('energy_threshold_kj_mol',1.0e12)),
-        cpptraj_cutoff_angstrom=float(validation_cfg.get('cpptraj_cutoff_angstrom',10.0)),
-        report_limit=int(validation_cfg.get('report_limit',100)),
         report_path=out/'final_validation.json')
     return final_items,{
         'mode':'membrane_only','raw_preion_charge_e':raw_preion_charge,
@@ -2984,6 +2983,36 @@ def _prepare_membrane_only_topology_and_ions(assembled,box,cfg,out,rng):
     },final_system
 
 
+
+def _measure_membrane_headgroup_planes(items):
+    """Measure lower and upper planes from constructed lipid P31 atoms."""
+    upper=[]
+    lower=[]
+
+    for item in items:
+        for atom,point in zip(
+            item['molecule']['atoms'],
+            item['xyz'],
+        ):
+            if (
+                atom['name']=='P31'
+                and atom['resname'] in {'PC','PE','PS'}
+            ):
+                z=float(point[2])
+                if z>0.0:
+                    upper.append(z)
+                elif z<0.0:
+                    lower.append(z)
+
+    if not upper or not lower:
+        raise RuntimeError(
+            'Cannot derive both membrane headgroup planes '
+            'from constructed P31 coordinates'
+        )
+
+    return float(np.mean(lower)),float(np.mean(upper))
+
+
 def _build_membrane_only(config_path,cfg):
     settings=cfg.get('membrane_only',{})
     box_xy=np.asarray(settings.get('box_xy_angstrom',[110.0,110.0]),float)
@@ -2996,9 +3025,10 @@ def _build_membrane_only(config_path,cfg):
         molecules,reference_box,box_xy,rng)
     target_per_leaflet=int(host_report['selected_sites_per_leaflet'])
     target_total=int(host_report['selected_total_sites'])
-    lower=-float(settings.get('half_thickness_angstrom',17.9))
-    upper=+float(settings.get('half_thickness_angstrom',17.9))
-    box=np.array([actual_box_xy[0],actual_box_xy[1],float(cfg.get('membrane',{}).get('box_z_angstrom',96.0))])
+    lower,upper=_measure_membrane_headgroup_planes(
+        assembled
+    )
+    box=np.array([actual_box_xy[0],actual_box_xy[1],MEMBRANE_ONLY_INITIAL_BOX_Z_ANGSTROM])
     fixed=[]
     cfg['_periodic_box_angstrom']=[float(box[0]),float(box[1]),float(box[2])]
     assembled,composition_report=_apply_complex_composition(
@@ -3018,7 +3048,7 @@ def _build_membrane_only(config_path,cfg):
         'box_angstrom':[float(value) for value in box],
         'host_selection':host_report,
         'canonical_ordering':canonical_order_report,
-        'requested_membrane':{'target_total_lipids':target_total,
+        'derived_membrane':{'target_total_lipids':target_total,
             'target_per_leaflet':target_per_leaflet,'box_xy_angstrom':[float(v) for v in box_xy]},
         'lipid_counts':{f'{species}_{leaflet}':count
             for (species,leaflet),count in counts.items()},
@@ -3040,19 +3070,19 @@ def build(config_path):
     original_lines,fixed,dum,planes,membrane_geometry_source=parse_opm(input_path,cfg.get('protein',{}))
     molecules,ref_box=parse_reference(ref_path)
     lower,upper=planes; mid=0.5*(lower+upper)
-    slab_margin=float(cfg['membrane'].get('footprint_z_margin_angstrom',8.0))
+    slab_margin=FOOTPRINT_Z_MARGIN_ANGSTROM
     membrane_atoms=[a for a in fixed if lower-slab_margin<=a['xyz'][2]<=upper+slab_margin]
     if not membrane_atoms: raise ValueError('No fixed atoms found near the OPM membrane slab')
     xy=np.array([a['xyz'][:2] for a in membrane_atoms])
     minimum=xy.min(axis=0); maximum=xy.max(axis=0); center=0.5*(minimum+maximum)
-    padding=float(cfg['membrane'].get('edge_padding_angstrom',20.0))
+    padding=EDGE_PADDING_ANGSTROM
     needed=(maximum-minimum)+2*padding
     tiles=np.maximum(1,np.ceil(needed/ref_box[:2]).astype(int))
-    box=np.array([tiles[0]*ref_box[0],tiles[1]*ref_box[1],float(cfg['membrane'].get('box_z_angstrom',200.0))])
+    box=np.array([tiles[0]*ref_box[0],tiles[1]*ref_box[1],PROTEIN_MEMBRANE_INITIAL_BOX_Z_ANGSTROM])
     origin=center-box[:2]/2
     fixed_cells=build_fixed_cells(fixed,4.0)
-    heavy_cut=float(cfg['packing'].get('fixed_heavy_lipid_heavy_angstrom',2.0))
-    hydrogen_cut=float(cfg['packing'].get('fixed_heavy_lipid_hydrogen_angstrom',1.2))
+    heavy_cut=FIXED_HEAVY_LIPID_HEAVY_ANGSTROM
+    hydrogen_cut=FIXED_HEAVY_LIPID_HYDROGEN_ANGSTROM
     kept=[]; removed=[]
     for ix in range(int(tiles[0])):
         for iy in range(int(tiles[1])):

@@ -10,6 +10,15 @@ import subprocess
 import tempfile
 import numpy as np
 
+from .defaults import (
+    FINAL_BOND_LENGTH_OFFSET_ANGSTROM,
+    FINAL_CPPTRAJ_CUTOFF_ANGSTROM,
+    FINAL_ENERGY_THRESHOLD_KJ_MOL,
+    FINAL_NONBONDED_HEAVY_CUTOFF_ANGSTROM,
+    FINAL_UNRELATED_ATOM_CUTOFF_ANGSTROM,
+    FINAL_VALIDATION_REPORT_LIMIT,
+)
+
 
 class FinalValidationError(RuntimeError):
     pass
@@ -358,12 +367,12 @@ def validate_final_system(
     prmtop: str | Path,
     rst7: str | Path,
     *,
-    unrelated_cutoff_angstrom: float = 0.5,
-    heavy_cutoff_angstrom: float = 1.0,
-    bond_offset_angstrom: float = 0.5,
-    energy_threshold_kj_mol: float = 1.0e12,
-    cpptraj_cutoff_angstrom: float = 10.0,
-    report_limit: int = 100,
+    unrelated_cutoff_angstrom: float = FINAL_UNRELATED_ATOM_CUTOFF_ANGSTROM,
+    heavy_cutoff_angstrom: float = FINAL_NONBONDED_HEAVY_CUTOFF_ANGSTROM,
+    bond_offset_angstrom: float = FINAL_BOND_LENGTH_OFFSET_ANGSTROM,
+    energy_threshold_kj_mol: float = FINAL_ENERGY_THRESHOLD_KJ_MOL,
+    cpptraj_cutoff_angstrom: float = FINAL_CPPTRAJ_CUTOFF_ANGSTROM,
+    report_limit: int = FINAL_VALIDATION_REPORT_LIMIT,
     report_path: str | Path | None = None,
     authoritative_solute_prmtop: str | Path | None = None,
     authoritative_solute_rst7: str | Path | None = None,

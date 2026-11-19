@@ -1,63 +1,36 @@
 protein:
-  pdb: inputs/model_aligned_renum.pdb
-  orientation_source: OPM
+  pdb: /absolute/path/to/oriented_protein.pdb
   preoriented: true
-
-reference_library:
-  POPC: packaged:POPC
-
-membrane:
-  host_lipid: POPC
-  edge_padding_angstrom: 20.0
-  footprint_z_margin_angstrom: 8.0
-  box_z_angstrom: 200.0
-
-packing:
-  fixed_heavy_lipid_heavy_angstrom: 2.0
-  fixed_heavy_lipid_hydrogen_angstrom: 1.2
-  lipid_hydrogen_hydrogen_angstrom: 1.15
-build: {seed: 1001, replicas: 1}
-
-complex_membrane:
-  enabled: true
-  POPS_fraction: 0.15
-  CHL_fraction: 0.05
-  POPS_reference: packaged:POPS
-  CHL_reference: packaged:CHL
-  protein_exclusion_shell_angstrom: 8.0
-  cholesterol_trials: 160
-  pops_donors_per_site: 64
-  require_exact_counts: true
-  leaflets:
-    upper: {POPS_fraction: 0.0, CHL_fraction: 0.05}
-    lower: {POPS_fraction: 0.30, CHL_fraction: 0.05}
-
-solvent:
-  enabled: true
-  model: OPC
-  reference_cache: ~/.cache/ambmem/opcbox.pdb
-  positive_z_buffer_from_headgroups_angstrom: 30.0
-  negative_z_buffer_from_headgroups_angstrom: 80.0
-  minimum_fixed_atom_box_clearance_angstrom: 5.0
-  minimum_water_oxygen_system_distance_angstrom: 2.4
-  minimum_water_hydrogen_system_distance_angstrom: 1.5
-  minimum_water_virtual_site_system_distance_angstrom: 1.2
-  preserve_input_waters: true
-  minimum_water_beyond_fixed_atoms_angstrom: 5.0
+  orientation_source: OPM
 
 topology:
   enabled: true
-  solute_prmtop: inputs/pre_membrane.prmtop
-  solute_coordinates: inputs/pre_membrane.rst7
-  charge_integer_tolerance_e: 0.01
+  solute_prmtop: /absolute/path/to/pre_membrane.prmtop
+  solute_coordinates: /absolute/path/to/pre_membrane.rst7
   output_prmtop: topology.prmtop
   output_rst7: coordinates.rst7
+
+membrane:
+  composition:
+    upper:
+      POPC: 0.60
+      POPE: 0.10
+      POPS: 0.00
+      CHL: 0.30
+    lower:
+      POPC: 0.30
+      POPE: 0.25
+      POPS: 0.20
+      CHL: 0.25
+
 ions:
   enabled: true
   salt: KCl
   concentration_molar: 0.15
-  minimum_ion_fixed_heavy_distance_angstrom: 4.0
-  minimum_ion_ion_distance_angstrom: 5.0
+
+build:
+  seed: 7001
+
 output:
-  directory: protein_membrane_replica_01
+  directory: /absolute/path/to/output
   pdb_name: system_membrane_solvated.pdb
