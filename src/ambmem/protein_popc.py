@@ -1,11 +1,7 @@
 from pathlib import Path
 import warnings
-# V0.1.7.1 FRESH FINAL SOLUTE RELOAD
-# V0.1.7 STRUCTURAL WATER CLASH POLICY
 
-# V0.1.7 STRUCTURAL WATER CLASH POLICY
-
-# Fixed internal safety thresholds. They are intentionally not YAML options.
+# Fixed internal safety thresholds.
 _STRUCTURAL_WATER_OXYGEN_HEAVY_CUTOFF_ANGSTROM = 1.0
 _STRUCTURAL_WATER_ANY_SITE_CUTOFF_ANGSTROM = 0.5
 _STRUCTURAL_WATER_WARNING_CUTOFF_ANGSTROM = 1.5
@@ -206,14 +202,8 @@ def _prepare_authoritative_solute_pair(solute_prmtop, solute_rst7, cfg, out):
     (out/'structural_water_cleanup.json').write_text(json.dumps(audit, indent=2)+'\n')
     return prepared, audit, final_top, final_rst
 
-# V0.1.6 PROTECTED STRUCTURAL WATER BLOCKS
 import json
-# V0.1.5 GLOBAL EXACT CHOLESTEROL PLACEMENT
 import copy
-# V0.1.4 UNIFIED POPS POPE HEADGROUP REPLACEMENT
-# V0.16.3 CANONICAL REPLICA ATOM ORDER
-# V0.16.2 COMMENSURATE PERIODIC BUILDER
-# V0.16.0 CPPTRAJ EXACT-FINAL-PAIR GATE
 from .final_validation import validate_final_system
 from .defaults import (
     CHARGE_INTEGER_TOLERANCE_E,
@@ -234,11 +224,6 @@ from .defaults import (
     MODULAR_JUNCTION_MINIMUM_ANGSTROM,
     PROTEIN_MEMBRANE_INITIAL_BOX_Z_ANGSTROM,
 )
-# V0.15.1 MEMBRANE-ONLY PACKING DEFAULTS
-# V0.15.0 MEMBRANE-ONLY BUILDER
-# V0.14.0 GENERIC CUSTOM STEROL PLACEMENT
-# V0.13.7 RESTORE LIPID21 TOPOLOGY HELPERS
-# V0.13.7 RESTORE LIPID21 TOPOLOGY HELPERS
 def _lipid21_interchange_line(serial,atom,icode,xyz):
     """Write one Lipid21 modular atom using the proven reference convention."""
     line=format_lipid_atom(serial,atom,1,xyz)
@@ -390,7 +375,6 @@ def _tleap_environment_topology_from_items(items,prefix,prmtop_path,rst7_path,lo
     return interchange_report
 
 
-# V0.14.0 GENERIC CUSTOM STEROL PLACEMENT
 def _parse_mol2_single_residue(path,residue_name,species):
     path=Path(path)
     lines=path.read_text(errors='replace').splitlines()
@@ -523,9 +507,8 @@ def _custom_sterol_settings(cfg):
         if key not in settings: raise ValueError(f'custom sterol setting is missing {key}')
     return settings
 
-# V0.13.6 RESTORE TOPOLOGY MAPPING HELPER
 
-# V0.1.6 PROTECTED STRUCTURAL WATER BLOCKS
+#PROTECTED STRUCTURAL WATER BLOCKS
 _STRUCTURAL_WATER_RESNAMES = ('WAT','HOH','OPC','TIP3','TIP4','TIP4P')
 
 
@@ -720,18 +703,6 @@ def _combine_protected_solute_and_environment(solute,environment,out):
     )
     return combined,audit
 
-
-# V0.13.5 ORDER-INDEPENDENT SOLUTE AUDIT
-# V0.13.4 LIPID21 MODULE ORDER
-# V0.13.3 LIPID21 COMPLETE-LIPID TER SEPARATION
-# V0.13.2 BATCHED LIPID21 INTERCHANGE
-# V0.13.1 PDB ATOM-NAME COLUMN ALIGNMENT
-# V0.13.0 AUTHORITATIVE TOPOLOGY MAPPING
-# V0.12.9 TOPOLOGY-PRESERVING ION AND AMBER OUTPUT
-# V0.12.8B RESTORE ORIGINAL DIRECT OPC PLACEMENT
-# V0.12.7 EXPLICIT FIXED-ATOM SOLVENT CONTAINMENT
-# V0.12.6 CRYST1 FINAL BOX OUTPUT
-# V0.12.5C FILTER TERMINAL AND CONNECTIVITY RECORDS
 from collections import defaultdict, Counter
 import argparse, hashlib, json, math, os, subprocess, tempfile
 import numpy as np
@@ -900,7 +871,7 @@ def clashes(molecule,fixed_cells,shift,cell_width,heavy_cut,hydrogen_cut):
 
 
 
-# V0.10.1 ADAPTIVE POPC BOUNDARY REFILL
+#ADAPTIVE POPC BOUNDARY REFILL
 def _rotate_z(xyz,center,angle):
     c=math.cos(angle); s=math.sin(angle)
     rotation=np.array([[c,-s,0.0],[s,c,0.0],[0.0,0.0,1.0]])
@@ -969,7 +940,7 @@ def _anchor_inside_fixed_footprint(anchor,membrane_fixed,xy_cut,z_cut):
     return False
 
 
-# V0.10.2 TOPOLOGY-BASED BOUNDARY REFILL
+#TOPOLOGY-BASED BOUNDARY REFILL
 def _refill_boundary_sites(removed,molecules,kept,fixed,lower,upper,box,cfg,rng):
     """Refill exterior annular sites using retained-host topology and exact contacts.
 
@@ -1097,7 +1068,7 @@ def _refill_boundary_sites(removed,molecules,kept,fixed,lower,upper,box,cfg,rng)
     return kept,accepted,remaining
 
 
-# V0.11.0 COMPLEX PROTEIN MEMBRANE
+#COMPLEX PROTEIN MEMBRANE
 def _kabsch(mobile,reference):
     mc=mobile.mean(axis=0); rc=reference.mean(axis=0)
     h=(mobile-mc).T@(reference-rc)
@@ -1159,7 +1130,7 @@ def _distance_to_fixed_xy(anchor,membrane_fixed):
 
 
 
-# V0.1.4 UNIFIED POPS POPE HEADGROUP REPLACEMENT
+#UNIFIED POPS POPE HEADGROUP REPLACEMENT
 
 def _convert_popc_headgroup_item(item,donors,rng,headgroup,species):
     """Replace only the POPC PC module with a PS or PE donor module."""
@@ -1602,16 +1573,6 @@ def _place_chl_item(host,donors,fixed_cells,lipid_items,cfg,rng):
     return {'molecule':best[1],'xyz':best[2],'anchor':best[3],'elements':best[4],
             'leaflet':host['leaflet'],'species':'CHL','score':float(best[0]),'minimum_distances':best[5]}
 
-
-
-# V0.11.1 CHOLESTEROL-FIRST EXACT COMPOSITION
-# V0.11.2 STRICT INTERMOLECULAR LIPID H-H FLOOR
-# V0.11.3 ASYMMETRIC LEAFLET COMPOSITION
-# V0.12.0 ASYMMETRIC OPC SOLVATION
-# V0.12.1 OPM INPUT WITHOUT DUM MARKERS
-# V0.12.2 PREORIENTED OPM DUM-OPTIONAL
-# V0.12.3 CONTIGUOUS OPC TILING
-# V0.12.4 TLEAP-CONTIGUOUS OPC VOLUME
 def _validate_replacement_item(candidate,host_index,items,fixed_cells,cfg):
     """Validate a replacement against every other molecule with periodic MIC.
 
@@ -1637,9 +1598,7 @@ def _validate_replacement_item(candidate,host_index,items,fixed_cells,cfg):
         cfg,
     )
 
-
-# V0.1.5 GLOBAL EXACT CHOLESTEROL PLACEMENT
-
+#GLOBAL EXACT CHOLESTEROL PLACEMENT
 def _cholesterol_periodic_box_xy(cfg):
     """Resolve the commensurate membrane XY dimensions for site ordering."""
     requested=(cfg.get('membrane_only',{}).get('box_xy_angstrom')
@@ -1708,8 +1667,6 @@ def _place_exact_cholesterol_target_single_attempt(items,eligible,target,donors,
             f'placed {len(placed)} after testing {len(candidates)} eligible POPC sites.'
         )
     return placed,failures
-
-
 
 def _place_exact_cholesterol_target(items,eligible,target,donors,fixed_cells,cfg,rng,leaf):
     """Place an exact CHL target with distributed sites and pristine retries."""
@@ -1833,7 +1790,7 @@ def _apply_complex_composition(items,fixed,lower,upper,cfg,rng):
     return items,report
 
 
-# V0.12.0 ASYMMETRIC OPC SOLVATION
+#ASYMMETRIC OPC SOLVATION
 def _amberhome():
     value=os.environ.get('AMBERHOME')
     if value and Path(value).is_dir(): return Path(value)
@@ -2003,7 +1960,7 @@ def _apply_opc_solvation(items,fixed,box,cfg):
     return items,new_box,report
 
 
-# V0.12.4 TLEAP-CONTIGUOUS OPC VOLUME
+#TLEAP-CONTIGUOUS OPC VOLUME
 def _generate_tleap_opc_volume(reference_path,bounds,cache_path):
     xlo,xhi,ylo,yhi,bottom,top=bounds
     cache_path=Path(cache_path); cache_path.parent.mkdir(parents=True,exist_ok=True)
@@ -2051,8 +2008,6 @@ def _parse_waters_from_pdb(path):
     if not waters: raise ValueError(f'No complete four-site OPC waters parsed from {path}')
     return waters
 
-
-# V0.12.8 RESTORE ORIGINAL DIRECT OPC PLACEMENT
 def _apply_opc_solvation(items,fixed,box,cfg):
     """Restore the original direct OPCBOX replication used by v0.12.0.
 
@@ -2248,7 +2203,7 @@ def format_lipid_atom(serial,atom,resid,xyz):
         raise RuntimeError(f'Internal PDB-column audit failed for {name!r}')
     return line
 
-# V0.12.9 TOPOLOGY-PRESERVING ION AND AMBER OUTPUT
+#TOPOLOGY-PRESERVING ION AND AMBER OUTPUT
 def _require_parmed():
     try:
         import parmed as pmd
@@ -2258,7 +2213,6 @@ def _require_parmed():
             'AmberTools environment and install/enable ParmEd before running.'
         ) from exc
     return pmd
-
 
 def _write_environment_pdb(items,path,box):
     lines=[
@@ -2358,8 +2312,6 @@ def _replace_opc_with_ions(items,cation_name,cation_resname,cation_element,
     kept.extend(ions)
     return kept,selected
 
-
-# V0.13.5 ORDER-INDEPENDENT SOLUTE AUDIT
 def _verify_solute_prefix(original,combined,tolerance=1.0e-6):
     """Verify preservation without assuming the solute remains an index prefix.
 
@@ -2415,7 +2367,6 @@ def _verify_solute_prefix(original,combined,tolerance=1.0e-6):
         'bond_definitions_preserved': True,
     }
 
-# V0.13.6 RESTORE TOPOLOGY MAPPING HELPER
 def _topology_pdb_mapping_report(solute,fixed):
     """Report PDB/topology differences without requiring user declarations.
 
@@ -2791,7 +2742,7 @@ def _prepare_topology_and_ions(assembled,fixed,box,cfg,out,rng):
             'final_validation':final_validation_report}
     return final_items,result,combined
 
-# V0.15.0 MEMBRANE-ONLY BUILDER
+#MEMBRANE-ONLY BUILDER
 def _build_membrane_only_host(molecules,reference_box,requested_box_xy,rng):
     """Build the nearest complete periodic reference supercell.
 
@@ -3138,7 +3089,6 @@ def build(config_path):
         f"CRYST1{float(box[0]):9.3f}{float(box[1]):9.3f}{float(box[2]):9.3f}"
         f"{90.0:7.2f}{90.0:7.2f}{90.0:7.2f} P 1           1"
     )
-    # V0.12.5C FILTER TERMINAL AND CONNECTIVITY RECORDS
     removed_terminal_records=0
     removed_connectivity_records=0
     for line in original_lines:

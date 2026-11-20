@@ -41,9 +41,6 @@ def normalize_config(cfg: dict) -> dict:
 
     complex_cfg = cfg.get("complex_membrane", {})
 
-    # The protein builder historically reads POPC_reference from
-    # complex_membrane. Resolve that field through package resources
-    # even when an older YAML contains a relative path.
     popc_reference = complex_cfg.get(
         "POPC_reference",
         "packaged:POPC",
@@ -233,8 +230,6 @@ def validate_config(path: str | Path, *, tleap_template_test: bool = True) -> tu
         .get("composition", {})
     )
 
-    # Import the same deterministic integer allocator used by the
-    # builder so preflight and production cannot disagree.
     from .protein_popc import _allocate_leaflet_counts
 
     if mode == "membrane_only":
