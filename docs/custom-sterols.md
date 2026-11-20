@@ -1,6 +1,6 @@
 # Custom sterols
 
-Users provide a matching MOL2, Amber LIB/OFF, and FRCMOD. No project-specific custom parameters are bundled.
+Users provide a matching MOL2, Amber LIB/OFF, and FRCMOD.
 
 Requirements:
 

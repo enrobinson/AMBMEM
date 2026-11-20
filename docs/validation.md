@@ -1,20 +1,6 @@
 # Final-system validation
 
-AMBMEM 0.1.2 validates the exact final Amber topology/restart pair after every construction stage. The validator uses ParmEd, NumPy, and CPPTRAJ from AmberTools 26 or newer. OpenMM and sander are not required.
-
-## Default configuration
-
-```yaml
-final_validation:
-  unrelated_atom_cutoff_angstrom: 0.5
-  nonbonded_heavy_cutoff_angstrom: 1.0
-  bond_length_offset_angstrom: 0.5
-  cpptraj_cutoff_angstrom: 10.0
-  energy_threshold_kj_mol: 1.0e12
-  report_limit: 100
-```
-
-These are catastrophic-assembly thresholds, not equilibration criteria.
+AMBMEM 0.1.2 validates the exact final Amber topology/restart pair after every construction stage. The validator uses ParmEd, NumPy, and CPPTRAJ from AmberTools 26 or newer.
 
 ## Validation sequence
 
@@ -29,6 +15,4 @@ These are catastrophic-assembly thresholds, not equilibration criteria.
 
 AMBMEM builds complete commensurate supercells from the reference `CRYST1` vectors. Periodic minimum-image checks are applied during cholesterol and custom-sterol replacement, OPC placement, and ion placement. Every accepted OPC water is registered before later waters are tested.
 
-## Replica water counts
 
-Seeded replicas can accept different OPC water counts because sterol coordinates change solvent exclusion. Dry composition and dry atom order remain consistent. Users who require one topology can normalize waters with ParmEd and then validate the shared topology against every restart.

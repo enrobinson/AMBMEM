@@ -1,5 +1,11 @@
 # Membrane-only builds
 
-Use `membrane_only.enabled: true`. Specify lateral dimensions, exact molecules per leaflet, composition, OPC buffers, and ions. No protein coordinates or solute topology are used.
+Use `membrane_only.enabled: true`. Specify approximate lateral dimensions, composition, OPC buffers, and ions. No protein coordinates or solute topology are used.
 
-For a 120 x 120 A, 400-molecule control, see `examples/membrane_only_control.yaml`.
+For an example, see `examples/membrane_only_control.yaml`.
+
+Current membrane-only builds support:
+POPC 
+POPS
+POPE
+Custom Sterol/Lipid Residue

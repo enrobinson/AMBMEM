@@ -16,6 +16,4 @@ Compare dry atom order and molecule counts. OPC water counts can differ across s
 
 Correct the MOL2 and Amber LIB charges so the residue charge matches `expected_formal_charge`. A small per-residue residual accumulates when many copies are inserted.
 
-## Lipid21 connection errors
 
-AMBMEM writes Lipid21 modules in validated order and places `TER` only after each complete lipid. Do not place `TER` between PA, PC/PS/PE, and OL modules.

@@ -4,12 +4,10 @@
 
 - AmberTools 26 or newer
 - Python 3.10 or newer
-- ParmEd from the AmberTools environment
 - NumPy
 - PyYAML
 - pytest for development testing
 
-CPPTRAJ and tLEaP are supplied by AmberTools. AMBMEM does not require OpenMM or sander.
 
 ## Install from GitHub
 
